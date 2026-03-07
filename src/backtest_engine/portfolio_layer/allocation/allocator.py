@@ -113,6 +113,7 @@ class Allocator:
                 slot_id=sig.slot_id,
                 symbol=sig.symbol,
                 target_qty=contracts * sig.direction,
+                reason=sig.reason,
             ))
 
         return targets

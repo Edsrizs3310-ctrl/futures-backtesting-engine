@@ -440,10 +440,13 @@ class BacktestEngine:
         print(report_str)
 
         benchmark = self.data["close"] if not self.data.empty else None
+        dmap = {self.settings.default_symbol: self.data} if not self.data.empty else None
+
         save_backtest_results(
             history=history,
             trades=trades,
             report_str=report_str,
             metrics=metrics,
             benchmark=benchmark,
+            data_map=dmap,
         )

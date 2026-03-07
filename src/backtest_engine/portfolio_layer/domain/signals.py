@@ -51,3 +51,4 @@ class TargetPosition:
     slot_id: int
     symbol: str
     target_qty: float
+    reason: str = "PORTFOLIO_SYNC"

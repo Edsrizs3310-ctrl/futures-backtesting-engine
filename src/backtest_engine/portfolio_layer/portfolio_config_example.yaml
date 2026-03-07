@@ -22,7 +22,7 @@
 # eod_close_time, trading hours) live in settings.py — no duplication here.
 
 portfolio:
-  rebalance_frequency: daily          # intrabar | daily | weekly
+  rebalance_frequency: intrabar          # intrabar | daily | weekly
   benchmark_symbol: ES                # Buy-and-hold benchmark shown in dashboard (null to disable)
 
   # ── Vol-targeting ─────────────────────────────────────────────────────────
@@ -31,30 +31,17 @@ portfolio:
   max_contracts_per_slot: 3           # Hard cap on contracts per (slot, symbol)
 
 strategies:
-  - strategy: stat_level
+
+  - strategy: sma_pullback
     symbols:
-      - YM
-    weight: 0.25
-    timeframe: 30m
+      - GC
+    weight: 0.5
+    timeframe: 5m
     params: {}
 
-  - strategy: stat_level
+  - strategy: sma_pullback
     symbols:
-      - NQ
-    weight: 0.25
-    timeframe: 30m
-    params: {}
-
-  - strategy: SmaCrossoverStrategy
-    symbols:
-      - ES
-    weight: 0.25
-    timeframe: 30m
-    params: {}
-
-  - strategy: zscore
-    symbols:
-      - ES
-    weight: 0.25
-    timeframe: 30m
+      - SI
+    weight: 0.5
+    timeframe: 5m
     params: {}

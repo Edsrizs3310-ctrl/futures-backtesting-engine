@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import List, Tuple
 
 
 def run(config_path: str, launch_dashboard: bool = False) -> None:
@@ -37,6 +38,7 @@ def run(config_path: str, launch_dashboard: bool = False) -> None:
     )
     from src.strategies.registry import get_strategy_class_by_name
     from src.backtest_engine.settings import get_settings
+    from src.data.data_lake import DataLake
 
     cfg_path = Path(config_path)
     if not cfg_path.exists():
@@ -74,6 +76,29 @@ def run(config_path: str, launch_dashboard: bool = False) -> None:
         max_contracts_per_slot=int(portfolio_cfg.get("max_contracts_per_slot", 3)),
         benchmark_symbol=portfolio_cfg.get("benchmark_symbol", "ES") or None,
     )
+
+    requirements: List[Tuple[str, str]] = []
+    seen = set()
+    for slot in slots:
+        for symbol in slot.symbols:
+            key = (symbol, slot.timeframe)
+            if key not in seen:
+                seen.add(key)
+                requirements.append(key)
+
+    data_lake = DataLake(settings)
+    cache_errors = data_lake.validate_cache_requirements(requirements=requirements)
+    if cache_errors:
+        print("[Data] Cache freshness check failed:")
+        for err in cache_errors:
+            print(f"  - {err}")
+        print(
+            f"[Data] Update cache first. "
+            f"Max allowed age: {settings.max_cache_staleness_days} days."
+        )
+        symbols_str = " ".join(sorted({symbol for symbol, _ in requirements}))
+        print(f"[Data] Example: python run.py --download {symbols_str}")
+        sys.exit(1)
 
     engine = PortfolioBacktestEngine(config)
     engine.run()

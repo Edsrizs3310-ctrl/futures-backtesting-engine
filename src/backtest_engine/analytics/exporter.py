@@ -37,6 +37,7 @@ def save_backtest_results(
     report_str: str,
     metrics: Dict[str, float],
     benchmark: Optional[pd.Series] = None,
+    data_map: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> Path:
     """
     Saves all backtest artifacts to the configured results directory.
@@ -58,6 +59,8 @@ def save_backtest_results(
     Returns:
         Path to the results directory where files were written.
     """
+    from src.backtest_engine.analytics.exit_analysis import enrich_trades_with_exit_analytics
+    
     results_dir: Path = get_settings().get_results_path()
 
     # Equity curve
@@ -72,13 +75,24 @@ def save_backtest_results(
                 rows.append(t)
             else:
                 rows.append({
+                    "symbol":      getattr(t, "symbol",      ""),
+                    "entry_price": getattr(t, "entry_price", 0.0),
+                    "exit_price":  getattr(t, "exit_price",  0.0),
+                    "quantity":    getattr(t, "quantity",    0.0),
+                    "commission":  getattr(t, "commission",  0.0),
+                    "slippage":    getattr(t, "slippage",    0.0),
                     "entry_time":  getattr(t, "entry_time",  None),
                     "exit_time":   getattr(t, "exit_time",   None),
                     "direction":   getattr(t, "direction",   ""),
                     "pnl":         getattr(t, "pnl",         0.0),
                     "exit_reason": getattr(t, "exit_reason", ""),
                 })
-        pd.DataFrame(rows).to_parquet(results_dir / "trades.parquet", index=False)
+        
+        trades_df = pd.DataFrame(rows)
+        if not trades_df.empty and data_map:
+            trades_df = enrich_trades_with_exit_analytics(trades_df, data_map)
+            
+        trades_df.to_parquet(results_dir / "trades.parquet", index=False)
 
     # Benchmark
     if benchmark is not None:

@@ -112,5 +112,5 @@ mock dict, not the real `PortfolioBook`.  See module docstring for full limitati
 | `cli/wfo.py` | `--wfo` | `WalkForwardOptimizer` |
 | `cli/portfolio.py` | `--portfolio-backtest` | `PortfolioBacktestEngine`, `PortfolioConfig` |
 
-**Each module has its own strategy registry** — intentionally decoupled so adding
-a new strategy to one mode doesn't require touching other modes.
+**Strategy Resolution:** All commands resolve strategy identifiers through the central 
+metadata registry located at `src/strategies/registry.py`.

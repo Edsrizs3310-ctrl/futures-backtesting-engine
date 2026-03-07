@@ -106,10 +106,25 @@ class BacktestSettings(BaseSettings):
     max_historical_years: int = 2
     delayed_data_minutes: int = 15
     ib_use_rth: bool = False
+    # ── Cache Management ───────────────────────────────────────────────────────
+    max_cache_staleness_days: int = Field(
+        default=3,
+        description="Maximum allowed cache age in days for backtest runs.",
+    )
 
     def get_ib_request_delay(self) -> float:
         """Standard pacing delay to respect IB rate limits (~6 req/min)."""
         return 11.0
+
+    # ── Dashboard Analytics ──────────────────────────────────────────────────
+    rolling_sharpe_window_days: int = Field(
+        default=90,
+        description="Window in calendar days for rolling Sharpe calculation in the dashboard.",
+    )
+    dashboard_bars_per_day: float = Field(
+        default=13.0,
+        description="Trading bars per calendar day for annualisation (13 = 30-min session 06:30-13:00).",
+    )
 
     # ── Walk-Forward Validation (WFV) scheduling ──────────────────────────────
     wfo_n_folds: int = 4             # Number of walk-forward folds

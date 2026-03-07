@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from src.backtest_engine.analytics.dashboard.components import get_results_dir
+from src.backtest_engine.analytics.dashboard.core.components import get_results_dir
 
 
 @dataclass
@@ -32,11 +32,13 @@ class ResultBundle:
     benchmark: Optional[pd.DataFrame] = None
     exposure: Optional[pd.DataFrame] = None
     strategy_pnl_daily: Optional[pd.DataFrame] = None
+    instrument_closes: Optional[pd.DataFrame] = None
     
     # Metadata and Reporting
     metrics: Dict[str, Any] = None
     report: str = ""
     slots: Dict[str, str] = None    # {slot_id: strategy_name}
+    slot_weights: Dict[str, float] = None
 
 
 def load_result_bundle(results_dir: Optional[Path] = None) -> Optional[ResultBundle]:
@@ -70,10 +72,12 @@ def load_result_bundle(results_dir: Optional[Path] = None) -> Optional[ResultBun
         target_dir = portfolio_dir
         manifest = json.loads((portfolio_dir / "manifest.json").read_text(encoding="utf-8"))
         slots = manifest.get("slots", {})
+        slot_weights = manifest.get("slot_weights", {})
     else:
         run_type = "single"
         target_dir = base_dir
         slots = {}
+        slot_weights = {}
 
     # Required artifacts
     history_path = target_dir / "history.parquet"
@@ -93,7 +97,7 @@ def load_result_bundle(results_dir: Optional[Path] = None) -> Optional[ResultBun
         trades["exit_time"] = pd.to_datetime(trades["exit_time"])
 
     # Optional artifacts
-    bundle = ResultBundle(run_type=run_type, history=history, trades=trades, slots=slots)
+    bundle = ResultBundle(run_type=run_type, history=history, trades=trades, slots=slots, slot_weights=slot_weights)
 
     # Load report
     report_path = target_dir / "report.txt"
@@ -125,5 +129,12 @@ def load_result_bundle(results_dir: Optional[Path] = None) -> Optional[ResultBun
         bundle.benchmark = pd.read_parquet(bench_path)
         if not isinstance(bundle.benchmark.index, pd.DatetimeIndex):
             bundle.benchmark.index = pd.to_datetime(bundle.benchmark.index)
+
+    # Load instrument closes (for Alpha/Beta calculation)
+    ic_path = target_dir / "instrument_closes.parquet"
+    if ic_path.exists():
+        bundle.instrument_closes = pd.read_parquet(ic_path)
+        if not isinstance(bundle.instrument_closes.index, pd.DatetimeIndex):
+            bundle.instrument_closes.index = pd.to_datetime(bundle.instrument_closes.index)
 
     return bundle

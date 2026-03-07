@@ -49,8 +49,14 @@ src/
 │   │   └── reporting/              ── Result serialisation ──────────────────────
 │   │       └── results.py          save_portfolio_results() → 5 artifacts
 │   │
-│   ├── analytics/                  Dashboard, charts, performance metrics
-│   └── optimization/               Walk-Forward Optimizer (WFO)
+│   ├── analytics/                  Post-execution metrics, reports, and MFE/MAE
+│   │   └── dashboard/              Streamlit UI App
+│   │       ├── core/               Shared data layer and styling
+│   │       ├── pnl_analysis/       Equity, drawdown, and correlation charts
+│   │       ├── risk_analysis/      Risk metrics and visualisations
+│   │       └── simulation_analysis/ Monte Carlo and scenario simulators
+│   │
+│   └── optimization/               Walk-Forward Optimizer (WFO) & Validation
 │
 ├── strategies/                     Single-asset strategy implementations
 │   ├── base.py                     BaseStrategy contract

@@ -22,6 +22,7 @@ def _fmt(
     is_pct:   bool = False,
     is_money: bool = False,
     is_int:   bool = False,
+    decimals: Optional[int] = None,
 ) -> str:
     """
     Formats a scalar value as a right-aligned display string.
@@ -31,6 +32,7 @@ def _fmt(
         is_pct:   Format as percentage (e.g. 12.34%).
         is_money: Format as dollars (e.g. $1,234).
         is_int:   Format as integer with thousands separator.
+        decimals: Number of decimal digits for floats.
 
     Returns:
         Formatted string.
@@ -42,7 +44,12 @@ def _fmt(
     if is_pct:
         return f"{value:.2%}"
     if is_money:
+        if value < 0:
+            return f"-${abs(value):,.0f}"
         return f"${value:,.0f}"
+    
+    if decimals is not None:
+        return f"{value:.{decimals}f}"
     return f"{value:.4f}"
 
 
@@ -62,9 +69,19 @@ def _fmt_td(td: pd.Timedelta) -> str:
     days, rem  = divmod(total_sec, 86400)
     hours, rem = divmod(rem, 3600)
     minutes, _ = divmod(rem, 60)
+    
+    parts = []
     if days > 0:
-        return f"{days}d {hours}h {minutes}m"
-    return f"{hours}h {minutes}m"
+        parts.append(f"{days}d")
+    if hours > 0 or days > 0:
+        parts.append(f"{hours}h")
+    
+    if len(parts) == 0 and minutes == 0:
+        return "0h"
+    if minutes > 0 or len(parts) == 0:
+        parts.append(f"{minutes}m")
+    
+    return " ".join(parts)
 
 
 def get_full_report_str(
@@ -105,51 +122,93 @@ def get_full_report_str(
     else:
         avg_hold = max_hold = min_hold = pd.Timedelta(0)
 
-    COL_W:   int = 16
-    LABEL_W: int = 20
-    sep:     str = "-" * (LABEL_W + COL_W + 4)
+    TOTAL_W: int = 48
+    LABEL_W: int = 28
+    COL_W: int = TOTAL_W - LABEL_W
 
-    lines.append("\n" + sep)
-    lines.append(f"{'BACKTEST RESULTS':^{LABEL_W + COL_W + 4}}")
+    eq_sep:  str = "=" * TOTAL_W
+    sep:     str = "-" * TOTAL_W
+
+    lines.append("\n" + eq_sep)
+    lines.append(f"{'BACKTEST RESULTS':^{TOTAL_W}}")
+    lines.append(eq_sep)
+    lines.append("")
+
+    total_pnl: float = sum(extract_pnls(trades or []))
+
+    # 1. PERFORMANCE
+    lines.append("PERFORMANCE")
     lines.append(sep)
-
-    # 1. Core Performance
-    core_rows: List[Tuple] = [
+    perf_rows: List[Tuple] = [
         ("Total Return",  metrics.get("Total Return"),  dict(is_pct=True)),
         ("CAGR",          metrics.get("CAGR"),          dict(is_pct=True)),
-        ("Volatility",    metrics.get("Volatility"),    dict(is_pct=True)),
-        ("Sharpe Ratio",  metrics.get("Sharpe Ratio"),  {}),
-        ("Sortino Ratio", metrics.get("Sortino Ratio"), {}),
-        ("Max Drawdown",  metrics.get("Max Drawdown"),  dict(is_pct=True)),
-        ("Calmar Ratio",  metrics.get("Calmar Ratio"),  {}),
+        ("Total PnL ($)", total_pnl,                    dict(is_money=True)),
     ]
-    for label, val, args in core_rows:
+    for label, val, args in perf_rows:
         lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
 
+    # 2. RISK
+    lines.append("RISK")
     lines.append(sep)
+    risk_rows: List[Tuple] = [
+        ("Volatility",    metrics.get("Volatility"),    dict(is_pct=True)),
+        ("Max Drawdown",  metrics.get("Max Drawdown"),  dict(is_pct=True)),
+    ]
+    for label, val, args in risk_rows:
+        lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
 
-    # 2. Trade Statistics
-    total_pnl: float = sum(extract_pnls(trades or []))
-    trade_rows: List[Tuple] = [
+    # 3. RISK-ADJUSTED METRICS
+    lines.append("RISK-ADJUSTED METRICS")
+    lines.append(sep)
+    adj_rows: List[Tuple] = [
+        ("Sharpe Ratio",         metrics.get("Sharpe Ratio"),          dict(decimals=2)),
+        ("Deflated Sharp Ratio", metrics.get("Deflated Sharpe Ratio"), dict(decimals=2)),
+        ("Sortino Ratio",        metrics.get("Sortino Ratio"),         dict(decimals=2)),
+        ("Calmar Ratio",         metrics.get("Calmar Ratio"),          dict(decimals=2)),
+    ]
+    for label, val, args in adj_rows:
+        lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
+
+    # 4. TRADE STATISTICS
+    lines.append("TRADE STATISTICS")
+    lines.append(sep)
+    trade_rows_1: List[Tuple] = [
         ("Total Trades",  metrics.get("Total Trades", 0),  dict(is_int=True)),
         ("Win Rate",      metrics.get("Win Rate", 0),      dict(is_pct=True)),
-        ("Profit Factor", metrics.get("Profit Factor", 0), {}),
+        ("Profit Factor", metrics.get("Profit Factor", 0), dict(decimals=2)),
+    ]
+    for label, val, args in trade_rows_1:
+        lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
+    
+    trade_rows_2: List[Tuple] = [
         ("Avg Trade ($)", metrics.get("Avg Trade", 0),     dict(is_money=True)),
-        ("Total PnL ($)", total_pnl,                       dict(is_money=True)),
         ("Avg Win ($)",   metrics.get("Avg Win", 0),       dict(is_money=True)),
         ("Avg Loss ($)",  metrics.get("Avg Loss", 0),      dict(is_money=True)),
-        ("T-Statistic",   metrics.get("T-Statistic", 0),   {}),
-        ("P-Value",       metrics.get("P-Value", 1),        {}),
     ]
-    for label, val, args in trade_rows:
+    for label, val, args in trade_rows_2:
         lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
 
+    # 5. STATISTICAL SIGNIFICANCE
+    lines.append("STATISTICAL SIGNIFICANCE")
     lines.append(sep)
+    stat_rows: List[Tuple] = [
+        ("T-Statistic",   metrics.get("T-Statistic", 0),   dict(decimals=2)),
+        ("P-Value",       metrics.get("P-Value", 1),       dict(decimals=3)),
+    ]
+    for label, val, args in stat_rows:
+        lines.append(f"{label:<{LABEL_W}}{_fmt(val, **args):>{COL_W}}")
+    lines.append("")
 
-    # 3. Hold Times
+    # 6. EXECUTION STATS
+    lines.append("EXECUTION STATS")
+    lines.append(sep)
     lines.append(f"{'Max Hold Time':<{LABEL_W}}{_fmt_td(max_hold):>{COL_W}}")
     lines.append(f"{'Min Hold Time':<{LABEL_W}}{_fmt_td(min_hold):>{COL_W}}")
     lines.append(f"{'Avg Hold Time':<{LABEL_W}}{_fmt_td(avg_hold):>{COL_W}}")
-    lines.append(sep + "\n")
 
     return "\n".join(lines)

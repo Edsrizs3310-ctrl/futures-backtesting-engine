@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import scipy.stats as stats
 
 
 def calc_total_return(equity: pd.Series) -> float:
@@ -169,3 +170,55 @@ def calc_calmar(cagr: float, max_drawdown: float) -> float:
         Calmar Ratio.
     """
     return cagr / abs(max_drawdown) if max_drawdown != 0 else 0.0
+
+
+def calc_dsr(
+    returns: pd.Series,
+    sharpe: float,
+    trials: int = 1,
+    trials_sharpe: pd.Series | list[float] | None = None
+) -> float:
+    """
+    Calculates the Deflated Sharpe Ratio (DSR) to account for non-normal returns.
+
+    Methodology:
+        Corrects the Sharpe ratio for the effects of non-normal returns (skewness and kurtosis)
+        and multiple testing (data mining/selection bias).
+        Formula: DSR = Phi((SR - SR*) / sigma(SR))
+        Where SR* is the expected maximum Sharpe ratio from M independent trials.
+
+    Args:
+        returns: Per-bar return series.
+        sharpe: Calculated Sharpe Ratio for the strategy.
+        trials: Number of trials or parameter combinations tested.
+        trials_sharpe: List of Sharpe ratios from all trials.
+
+    Returns:
+        Deflated Sharpe Ratio (probability that the Sharpe ratio is not due to chance).
+    """
+    if len(returns) < 30 or sharpe == 0.0:
+        return 0.0
+
+    n = len(returns)
+    skewness = float(stats.skew(returns, nan_policy='omit'))
+    kurt = float(stats.kurtosis(returns, fisher=False, nan_policy='omit'))
+
+    # Calculate standard error of Sharpe Ratio
+    sigma_sr = np.sqrt((1 - skewness * sharpe + ((kurt - 1) / 4) * (sharpe ** 2)) / (n - 1))
+    
+    if sigma_sr == 0.0 or pd.isna(sigma_sr):
+        return 0.0
+
+    # Calculate expected max Sharpe (SR*)
+    sr_star = 0.0
+    if trials > 1 and trials_sharpe is not None and len(trials_sharpe) > 0:
+        mu_sr = float(np.mean(trials_sharpe))
+        sigma_trials = float(np.std(trials_sharpe))
+        gamma = 0.5772156649  # Euler-Mascheroni constant
+        
+        term1 = (1 - gamma) * stats.norm.ppf(1 - 1 / trials)
+        term2 = gamma * stats.norm.ppf(1 - 1 / (trials * np.e))
+        sr_star = mu_sr + sigma_trials * (term1 + term2)
+
+    dsr = stats.norm.cdf((sharpe - sr_star) / sigma_sr)
+    return float(dsr)

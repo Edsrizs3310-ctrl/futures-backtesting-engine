@@ -24,6 +24,7 @@ from .metrics import (
     calc_sortino,
     calc_total_return,
     calc_years,
+    calc_dsr,
 )
 from .trades import calc_trade_stats
 from .report import get_full_report_str as _build_report
@@ -51,6 +52,8 @@ class PerformanceMetrics:
         self,
         portfolio_history: pd.DataFrame,
         trades: Optional[List[Any]] = None,
+        trials: int = 1,
+        trials_sharpe: Optional[List[float]] = None,
     ) -> Dict[str, float]:
         """
         Computes all KPIs for a completed backtest.
@@ -83,12 +86,14 @@ class PerformanceMetrics:
         sortino:      float = calc_sortino(cagr, returns, bpy, self.risk_free_rate)
         max_dd:       float = calc_max_drawdown(equity)
         calmar:       float = calc_calmar(cagr, max_dd)
+        dsr:          float = calc_dsr(returns, sharpe, trials=trials, trials_sharpe=trials_sharpe)
 
         metrics: Dict[str, float] = {
             "Total Return":  total_return,
             "CAGR":          cagr,
             "Volatility":    vol,
             "Sharpe Ratio":  sharpe,
+            "Deflated Sharpe Ratio": dsr,
             "Sortino Ratio": sortino,
             "Max Drawdown":  max_dd,
             "Calmar Ratio":  calmar,

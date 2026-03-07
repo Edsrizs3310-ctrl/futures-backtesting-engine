@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from src.strategies.registry import load_strategy_by_id, get_strategy_ids
+from src.data.data_lake import DataLake
+from src.strategies.registry import load_strategy_by_id
 
 
 def _load_strategy(name: str) -> Any:
@@ -52,6 +53,21 @@ def run(strategy_name: str, settings: Any, launch_dashboard: bool = False) -> No
     print(f"  Timeframe: {settings.low_interval}")
     print(f"  Capital  : ${settings.initial_capital:,.0f}")
     print("=" * 60)
+
+    data_lake = DataLake(settings)
+    cache_errors = data_lake.validate_cache_requirements(
+        requirements=[(settings.default_symbol, settings.low_interval)],
+    )
+    if cache_errors:
+        print("[Data] Cache freshness check failed:")
+        for err in cache_errors:
+            print(f"  - {err}")
+        print(
+            f"[Data] Update cache first. "
+            f"Max allowed age: {settings.max_cache_staleness_days} days."
+        )
+        print(f"[Data] Example: python run.py --download {settings.default_symbol}")
+        sys.exit(1)
 
     engine = BacktestEngine()
     engine.run(strategy_class)

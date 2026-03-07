@@ -51,6 +51,8 @@ def save_portfolio_results(
     metrics: Dict[str, Any],
     slot_names: Optional[Dict[int, str]] = None,
     benchmark: Optional[pd.DataFrame] = None,
+    data_map: Optional[Dict[Any, pd.DataFrame]] = None,
+    slot_weights: Optional[Dict[int, float]] = None,
 ) -> None:
     """
     Serialises all portfolio artifacts to results/portfolio/.
@@ -89,6 +91,30 @@ def save_portfolio_results(
         benchmark.to_parquet(out / "benchmark.parquet")
         saved.append("benchmark.parquet")
 
+    # 3.5. Instrument Close Prices (for Alpha/Beta calculation)
+    if data_map:
+        closes_dict = {}
+        for key, df in data_map.items():
+            # key can be symbol or (slot_id, symbol)
+            # We want to extract just the symbol string to serve as the column name
+            symbol = key[1] if isinstance(key, tuple) else key
+            if "close" in df.columns:
+                closes_dict[symbol] = df["close"]
+                
+        if closes_dict:
+            # Drop timezone when concatenating if there's any discrepancy, or just concat
+            # pandas handles Index alignment
+            inst_closes_df = pd.DataFrame(closes_dict)
+            if not isinstance(inst_closes_df.index, pd.DatetimeIndex):
+                inst_closes_df.index = pd.to_datetime(inst_closes_df.index)
+                
+            # Since Alpha/Beta correlations only need daily data, we must resample the 
+            # intraday close prices (potentially 100k+ bars) down to daily bars to save memory.
+            inst_closes_df = inst_closes_df.resample('1D').last().dropna(how='all')
+                
+            inst_closes_df.to_parquet(out / "instrument_closes.parquet")
+            saved.append("instrument_closes.parquet")
+
     # 3. Per-slot daily PnL (resample slot_N_pnl columns to calendar day)
     pnl_cols = [c for c in history.columns if c.startswith("slot_") and c.endswith("_pnl")]
     if pnl_cols:
@@ -103,22 +129,38 @@ def save_portfolio_results(
     for slot_id, trades in slot_trades.items():
         strategy_name = (slot_names or {}).get(slot_id, f"slot_{slot_id}")
         for t in trades:
+            qty      = getattr(t, "quantity", 0)
+            ep       = getattr(t, "entry_price", 0.0)
+            xp       = getattr(t, "exit_price", 0.0)
+            comm     = getattr(t, "commission", 0.0)
+            slip     = getattr(t, "slippage", 0.0)
+            # gross_pnl = raw signal value before any execution costs
+            direction = getattr(t, "direction", "LONG")
+            sign      = 1.0 if direction == "LONG" else -1.0
+            gross_pnl = sign * (xp - ep) * abs(qty)
             all_trade_rows.append({
                 "slot_id":       slot_id,
                 "strategy":      strategy_name,
-                "symbol":        t.symbol,
-                "direction":     t.direction,
-                "entry_time":    t.entry_time,
-                "exit_time":     t.exit_time,
-                "entry_price":   t.entry_price,
-                "exit_price":    t.exit_price,
-                "quantity":      t.quantity,
-                "pnl":           t.pnl,
-                "commission":    t.commission,
-                "exit_reason":   t.exit_reason,
+                "symbol":        getattr(t, "symbol", ""),
+                "direction":     direction,
+                "entry_time":    getattr(t, "entry_time", None),
+                "exit_time":     getattr(t, "exit_time", None),
+                "entry_price":   ep,
+                "exit_price":    xp,
+                "quantity":      qty,
+                "gross_pnl":     round(gross_pnl, 2),
+                "commission":    comm,
+                "slippage":      slip,
+                "pnl":           getattr(t, "pnl", 0.0),
+                "exit_reason":   getattr(t, "exit_reason", ""),
             })
     if all_trade_rows:
         trades_df = pd.DataFrame(all_trade_rows)
+        
+        if not trades_df.empty and data_map:
+            from src.backtest_engine.analytics.exit_analysis import enrich_trades_with_exit_analytics
+            trades_df = enrich_trades_with_exit_analytics(trades_df, data_map)
+            
         trades_df.to_parquet(out / "trades.parquet")
         saved.append("trades.parquet")
 
@@ -139,15 +181,15 @@ def save_portfolio_results(
     # 7. Manifest — schema contract for the dashboard auto-detection
     saved.append("manifest.json")
     manifest = {
-        "run_type":       "portfolio",
+        "run_type": "portfolio",
         "schema_version": SCHEMA_VERSION,
-        "generated_at":   datetime.now(tz=timezone.utc).isoformat(),
-        "artifacts":      saved,
-        "slots":          slot_names or {},
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "artifacts": saved,
+        "slots": slot_names or {},
+        "slot_weights": slot_weights or {}
     }
-    (out / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
-    )
+    with open(out / "manifest.json", "w", encoding="utf-8") as f:
+        f.write(json.dumps(manifest, indent=2, default=str))
 
     # Run type marker for the dashboard
     (out.parent / ".run_type").write_text("portfolio", encoding="utf-8")

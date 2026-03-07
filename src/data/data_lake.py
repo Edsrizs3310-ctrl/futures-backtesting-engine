@@ -6,7 +6,7 @@ For downloading new data, use IBFetcher directly.
 """
 
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 import pandas as pd
 
@@ -34,6 +34,118 @@ class DataLake:
         """Get path to cache file for symbol and timeframe."""
         cache_dir = self.settings.get_cache_path()
         return cache_dir / f"{symbol}_{timeframe}.parquet"
+
+    def _read_cache_index(self, cache_file: Path) -> pd.DatetimeIndex:
+        """
+        Reads and normalizes the cache index as a naive UTC DatetimeIndex.
+
+        Args:
+            cache_file: Path to cached parquet file.
+
+        Returns:
+            Normalized DatetimeIndex sorted in ascending order.
+        """
+        df = pd.read_parquet(cache_file)
+        if df.empty:
+            return pd.DatetimeIndex([])
+
+        idx = df.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            if "date" in df.columns:
+                idx = pd.to_datetime(df["date"])
+            else:
+                idx = pd.to_datetime(idx)
+
+        if idx.tz is not None:
+            idx = idx.tz_convert("UTC").tz_localize(None)
+
+        return pd.DatetimeIndex(idx).sort_values()
+
+    def check_cache_freshness(
+        self,
+        symbol: str,
+        timeframe: str,
+        max_staleness_days: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Validates whether a cache file exists and is fresh enough.
+
+        Methodology:
+            Uses the latest timestamp in cached bars and compares it to UTC now.
+            A dataset is considered stale when age > max_staleness_days.
+
+        Args:
+            symbol: Futures symbol (e.g. 'ES').
+            timeframe: Timeframe suffix ('1m', '5m', '30m', '1h').
+            max_staleness_days: Optional override for max age threshold.
+
+        Returns:
+            (is_valid, message) tuple.
+        """
+        max_days = (
+            int(max_staleness_days)
+            if max_staleness_days is not None
+            else int(self.settings.max_cache_staleness_days)
+        )
+        cache_file = self._get_cache_file(symbol, timeframe)
+
+        if not cache_file.exists():
+            return (
+                False,
+                f"{symbol} {timeframe}: cache file missing ({cache_file}).",
+            )
+
+        try:
+            idx = self._read_cache_index(cache_file)
+        except Exception as exc:
+            return (
+                False,
+                f"{symbol} {timeframe}: failed to read cache ({exc}).",
+            )
+
+        if idx.empty:
+            return False, f"{symbol} {timeframe}: cache file is empty."
+
+        last_bar = idx.max()
+        now_utc = pd.Timestamp.utcnow().tz_localize(None)
+        age = now_utc - last_bar
+        max_age = pd.Timedelta(days=max_days)
+
+        if age > max_age:
+            return (
+                False,
+                f"{symbol} {timeframe}: stale cache (last bar {last_bar}, age {age}).",
+            )
+
+        return True, f"{symbol} {timeframe}: fresh (last bar {last_bar})."
+
+    def validate_cache_requirements(
+        self,
+        requirements: List[Tuple[str, str]],
+        max_staleness_days: Optional[int] = None,
+    ) -> List[str]:
+        """
+        Validates cache freshness for required (symbol, timeframe) pairs.
+
+        Args:
+            requirements: List of required (symbol, timeframe) pairs.
+            max_staleness_days: Optional override for max age threshold.
+
+        Returns:
+            List of validation error messages. Empty list means all good.
+        """
+        errors: List[str] = []
+
+        for symbol, timeframe in requirements:
+            ok, message = self.check_cache_freshness(
+                symbol=symbol,
+                timeframe=timeframe,
+                max_staleness_days=max_staleness_days,
+            )
+            if not ok:
+                errors.append(message)
+
+        return errors
     
     def load(
         self,

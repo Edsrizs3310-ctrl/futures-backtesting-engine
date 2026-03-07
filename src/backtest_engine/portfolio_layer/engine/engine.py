@@ -286,16 +286,16 @@ class PortfolioBacktestEngine:
     def _compute_orders(
         self,
         targets: List[TargetPosition],
-        pending_orders: List[Tuple[int, str, str, float]],
-    ) -> List[Tuple[int, str, str, float]]:
+        pending_orders: List[Tuple[int, str, str, float, str]],
+    ) -> List[Tuple[int, str, str, float, str]]:
         """
         Computes order deltas from target positions vs current holdings + pending orders.
 
         Returns:
-            List of (slot_id, symbol, side, abs_quantity) tuples.
+            List of (slot_id, symbol, side, abs_quantity, reason) tuples.
         """
         pending_qty: Dict[Tuple[int, str], float] = {}
-        for (sid, sym, side, qty) in pending_orders:
+        for (sid, sym, side, qty, reason) in pending_orders:
             signed_qty = qty if side == "BUY" else -qty
             pending_qty[(sid, sym)] = pending_qty.get((sid, sym), 0.0) + signed_qty
 
@@ -309,7 +309,7 @@ class PortfolioBacktestEngine:
                 continue
 
             side = "BUY" if delta > 0 else "SELL"
-            orders.append((target.slot_id, target.symbol, side, abs(delta)))
+            orders.append((target.slot_id, target.symbol, side, abs(delta), target.reason))
 
         return orders
 
@@ -404,8 +404,8 @@ class PortfolioBacktestEngine:
         runner = StrategyRunner(self.config, self._data_map, self.settings)
         self.scheduler.reset()
 
-        pending_orders: List[Tuple[int, str, str, float]] = []
-        current_targets: Dict[Tuple[int, str], float] = {}
+        pending_orders: List[Tuple[int, str, str, float, str]] = []
+        current_targets: Dict[Tuple[int, str], TargetPosition] = {}
         self._last_bars: Dict[Tuple[int, str], pd.Series] = {}
 
         # Snapshot equity for sizing (updated by scheduler gate)
@@ -422,15 +422,15 @@ class PortfolioBacktestEngine:
             next_date    = all_dates[i + 1] if i + 1 < data_len else None
 
             # ── A. Fill pending orders (carry forward through gap bars) ──────────
-            still_pending: List[Tuple[int, str, str, float]] = []
-            for (slot_id, symbol, side, qty) in pending_orders:
+            still_pending: List[Tuple[int, str, str, float, str]] = []
+            for (slot_id, symbol, side, qty, reason) in pending_orders:
                 df = self._data_map.get((slot_id, symbol))
                 if df is None or ts not in df.index:
-                    still_pending.append((slot_id, symbol, side, qty))
+                    still_pending.append((slot_id, symbol, side, qty, reason))
                     continue
                 bar = df.loc[ts]
                 self._last_bars[(slot_id, symbol)] = bar  # keep cache current
-                self._execute_order(slot_id, symbol, side, qty, bar)
+                self._execute_order(slot_id, symbol, side, qty, bar, reason=reason)
             pending_orders = still_pending
 
             # ── B. Mark-to-market ────────────────────────────────────────────────
@@ -489,13 +489,10 @@ class PortfolioBacktestEngine:
                     bars_per_year=self._bars_per_year,
                 )
                 for t in new_targets:
-                    current_targets[(t.slot_id, t.symbol)] = t.target_qty
+                    current_targets[(t.slot_id, t.symbol)] = t
 
             # Build full target list from maintained state
-            target_list = [
-                TargetPosition(slot_id=sid, symbol=sym, target_qty=qty)
-                for (sid, sym), qty in current_targets.items()
-            ]
+            target_list = list(current_targets.values())
 
             # ── H. Compute order deltas -> queue for t+1 ─────────────────────────
             orders = self._compute_orders(target_list, pending_orders)
@@ -507,13 +504,13 @@ class PortfolioBacktestEngine:
             if is_eod and self.settings.eod_close_time:
                 # 1. Execute outstanding pending orders at market-on-close
                 still_pending = []
-                for (slot_id, symbol, side, qty) in pending_orders:
+                for (slot_id, symbol, side, qty, reason) in pending_orders:
                     bar = self._last_bars.get((slot_id, symbol))
                     if bar is not None:
                         self._execute_order(slot_id, symbol, side, qty, bar,
-                                            execute_at_close=True)
+                                            execute_at_close=True, reason=reason)
                     else:
-                        still_pending.append((slot_id, symbol, side, qty))
+                        still_pending.append((slot_id, symbol, side, qty, reason))
                 pending_orders = still_pending
 
                 # 2. Force-liquidate ALL open positions using last-available bar
@@ -567,7 +564,13 @@ class PortfolioBacktestEngine:
             slot_trades=self._slot_trades,
             report_str=report,
             metrics=metrics,
-            slot_names={i: slot.strategy_class.__name__ for i, slot in enumerate(self.config.slots)},
+            slot_names={
+                i: f"{slot.strategy_class.__name__}({'_'.join(slot.symbols)}+{slot.timeframe.upper()})"
+                for i, slot in enumerate(self.config.slots)
+            },
             benchmark=benchmark,
+            data_map=self._data_map,
+            slot_weights={
+                i: slot.weight for i, slot in enumerate(self.config.slots)
+            },
         )
-
