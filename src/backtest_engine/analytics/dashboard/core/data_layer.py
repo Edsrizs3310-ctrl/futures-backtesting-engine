@@ -37,20 +37,24 @@ class ResultBundle:
     
     # Metadata and Reporting
     metrics: Dict[str, Any] = None
+    manifest: Dict[str, Any] = None
     report: str = ""
     slots: Dict[str, str] = None    # {slot_id: strategy_name}
     slot_weights: Dict[str, float] = None
 
 
-@st.cache_data(show_spinner="Loading Backtest Artifacts...")
+@st.cache_resource(show_spinner="Loading Backtest Artifacts...")
 def load_result_bundle(results_dir: Optional[str] = None) -> Optional[ResultBundle]:
     """
     Auto-detects run type and loads all artifacts into a unified ResultBundle.
 
     Methodology:
-        Checks modification times of `history.parquet` in both `results/` 
-        and `results/portfolio/`. Whichever is newer dictates whether we 
-        are visualizing a Single-Asset or Portfolio backtest.
+        Uses the `.run_type` marker at the supplied results root to decide
+        whether to load single-asset artifacts directly from `results/` or
+        portfolio artifacts from `results/portfolio/`. The same loader also
+        works for namespaced scenario roots such as `results/scenarios/<id>/`.
+        A short cache TTL keeps dashboard reads responsive while still allowing
+        newly written artifacts to appear without a full app restart.
 
     Args:
         results_dir: Optional override for testing. Defaults to project `results/`.
@@ -81,6 +85,8 @@ def load_result_bundle(results_dir: Optional[str] = None) -> Optional[ResultBund
     else:
         run_type = "single"
         target_dir = base_dir
+        manifest_path = target_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
         slots = {}
         slot_weights = {}
 
@@ -100,9 +106,18 @@ def load_result_bundle(results_dir: Optional[str] = None) -> Optional[ResultBund
         
     if "exit_time" in trades.columns:
         trades["exit_time"] = pd.to_datetime(trades["exit_time"])
+    if "entry_time" in trades.columns:
+        trades["entry_time"] = pd.to_datetime(trades["entry_time"])
 
     # Optional artifacts
-    bundle = ResultBundle(run_type=run_type, history=history, trades=trades, slots=slots, slot_weights=slot_weights)
+    bundle = ResultBundle(
+        run_type=run_type,
+        history=history,
+        trades=trades,
+        manifest=manifest,
+        slots=slots,
+        slot_weights=slot_weights,
+    )
 
     # Load report
     report_path = target_dir / "report.txt"

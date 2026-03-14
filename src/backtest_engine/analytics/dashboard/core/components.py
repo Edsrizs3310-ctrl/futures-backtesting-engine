@@ -84,7 +84,7 @@ def render_decomp_table(decomp_df: Optional[pd.DataFrame]) -> None:
     """
     Renders the Strategy PnL Decomposition table with conditional colouring.
 
-    Applies green/red to realised PnL and Sharpe columns.
+    Applies green/red to realised PnL and daily PnL Sharpe-like columns.
     All other columns use 2-decimal precision where needed.
 
     Args:
@@ -109,7 +109,7 @@ def render_decomp_table(decomp_df: Optional[pd.DataFrame]) -> None:
         return "background-color: #fadbd8"
 
     format_map = {
-        "Sharpe":                 "{:.2f}",
+        "Daily PnL Sharpe-like":  "{:.2f}",
         "Closed PnL ($)":         "{:,.0f}",
         "PnL Contrib (%)":        "{:.1f}%",
         "Risk Contrib (%)":       "{:.1f}%",
@@ -124,8 +124,8 @@ def render_decomp_table(decomp_df: Optional[pd.DataFrame]) -> None:
 
     if "Closed PnL ($)" in decomp_df.columns:
         style = style.map(_color_pnl, subset=["Closed PnL ($)"])
-    if "Sharpe" in decomp_df.columns:
-        style = style.map(_color_sharpe, subset=["Sharpe"])
+    if "Daily PnL Sharpe-like" in decomp_df.columns:
+        style = style.map(_color_sharpe, subset=["Daily PnL Sharpe-like"])
 
     render_dataframe(style)
 
@@ -151,7 +151,7 @@ def render_dataframe(
         The Streamlit event object if selection is enabled, else None.
     """
     kwargs = {
-        "use_container_width": True,
+        "width": "stretch",
         "hide_index": hide_index,
         "selection_mode": selection_mode,
         "on_select": on_select,

@@ -20,6 +20,10 @@ class Order:
 class Fill:
     """
     Represents a finalized trade execution against the market.
+
+    Methodology:
+    `slippage` is stored in price units per contract so the fill record preserves
+    the actual execution-price adjustment applied by the simulator.
     """
     order: Order
     fill_price: float
@@ -32,6 +36,11 @@ class Fill:
 class Trade:
     """
     Represents a completed round-trip trade (Entry + Exit) for analytics scoring.
+
+    Methodology:
+    `commission` and `slippage` are stored as positive dollar cost magnitudes for
+    the completed round trip so exporters and dashboard analytics do not need to
+    infer units from the execution layer.
     """
     symbol: str
     entry_price: float
@@ -42,6 +51,7 @@ class Trade:
     exit_time: datetime
     pnl: float
     commission: float
+    slippage: float = 0.0
     exit_reason: str = 'SIGNAL'
     entry_signal_time: Optional[datetime] = None
 
@@ -163,7 +173,10 @@ class ExecutionHandler:
             exit_comm_per_share = fill_comm / abs(fill_qty) if fill_qty != 0 else 0
             
             trade_comm = (entry_comm_per_share + exit_comm_per_share) * match_qty
-            net_pnl = pnl - trade_comm
+            entry_slippage_per_unit = abs(open_fill.slippage) * multiplier
+            exit_slippage_per_unit = abs(fill.slippage) * multiplier
+            trade_slippage = (entry_slippage_per_unit + exit_slippage_per_unit) * match_qty
+            net_pnl = pnl - trade_comm - trade_slippage
             
             self.trades.append(Trade(
                 symbol=symbol,
@@ -175,6 +188,7 @@ class ExecutionHandler:
                 exit_time=fill_time,
                 pnl=net_pnl,
                 commission=trade_comm,
+                slippage=trade_slippage,
                 exit_reason=fill.order.reason,
                 entry_signal_time=open_fill.order.timestamp
             ))
@@ -184,15 +198,48 @@ class ExecutionHandler:
                 remaining_qty = (abs(remaining_qty) - abs(open_qty)) * side
             else:
                 residue = (abs(open_qty) - abs(remaining_qty)) * open_side
-                open_fill.order.quantity = residue
-                new_open_positions.append(open_fill)
+                residue_fill = self._clone_fill_with_quantity(open_fill, residue)
+                new_open_positions.append(residue_fill)
                 remaining_qty = 0
         
         # Track any remaining unmatched execution quantities as new open positions
         if remaining_qty != 0:
-            new_fill_tracker = replace(fill)
-            new_fill_tracker.order = replace(fill.order)
-            new_fill_tracker.order.quantity = remaining_qty
+            new_fill_tracker = self._clone_fill_with_quantity(fill, remaining_qty)
             new_open_positions.append(new_fill_tracker)
             
         self._positions[symbol] = new_open_positions
+
+    def _clone_fill_with_quantity(self, fill: Fill, quantity: float) -> Fill:
+        """
+        Clones a fill tracker with proportional total costs for a new quantity.
+
+        Methodology:
+        Open-position residue objects are accounting trackers, not new market
+        executions. They preserve the original fill timestamp and execution
+        price. `commission` and signed cash `cost` are scaled to the remaining
+        quantity because they are aggregate fill totals. `slippage` is
+        intentionally left unchanged because Fill stores it as a per-contract
+        price-unit adjustment; scaling it here would understate residue slippage
+        on later matched trade fragments.
+
+        Args:
+            fill: Original fill object.
+            quantity: Signed quantity to keep on the cloned tracker.
+
+        Returns:
+            A cloned Fill with scaled aggregate fields for the requested quantity.
+        """
+        original_qty = abs(fill.order.quantity)
+        scaled_fill = replace(fill)
+        scaled_fill.order = replace(fill.order)
+        scaled_fill.order.quantity = quantity
+
+        if original_qty <= 0:
+            scaled_fill.commission = 0.0
+            scaled_fill.cost = 0.0
+            return scaled_fill
+
+        qty_ratio = abs(quantity) / original_qty
+        scaled_fill.commission = float(fill.commission) * qty_ratio
+        scaled_fill.cost = float(fill.cost) * qty_ratio
+        return scaled_fill

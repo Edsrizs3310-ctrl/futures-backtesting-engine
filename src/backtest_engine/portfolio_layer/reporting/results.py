@@ -6,7 +6,7 @@ Portfolio result artifact serialisation.
 Responsibility: Saves all artifacts to results/portfolio/:
   - history.parquet               Bar-by-bar equity curve + slot_N_pnl columns.
   - exposure.parquet              Per-bar qty + notional per (slot, symbol).
-  - strategy_pnl_daily.parquet   Per-slot daily PnL (slot_N_pnl columns).
+  - strategy_pnl_daily.parquet   Per-slot incremental daily PnL.
   - trades.parquet                All completed round-trip trades.
   - metrics.json                  Scalar performance metrics.
   - report.txt                    Human-readable terminal report.
@@ -15,12 +15,13 @@ Responsibility: Saves all artifacts to results/portfolio/:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from src.backtest_engine.serialization import dumps_json
 
 
 # ── Versioning ─────────────────────────────────────────────────────────────────
@@ -36,9 +37,9 @@ ARTIFACTS = [
 ]
 
 
-def _portfolio_results_dir() -> Path:
-    """Creates and returns the results/portfolio directory."""
-    path = Path("results") / "portfolio"
+def _portfolio_results_dir(output_dir: Optional[Path] = None) -> Path:
+    """Creates and returns the target portfolio results directory."""
+    path = output_dir if output_dir is not None else Path("results") / "portfolio"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -53,14 +54,17 @@ def save_portfolio_results(
     benchmark: Optional[pd.DataFrame] = None,
     data_map: Optional[Dict[Any, pd.DataFrame]] = None,
     slot_weights: Optional[Dict[int, float]] = None,
-) -> None:
+    instrument_specs: Optional[Dict[str, Dict]] = None,
+    output_dir: Optional[Path] = None,
+    manifest_metadata: Optional[Dict[str, Any]] = None,
+) -> Path:
     """
     Serialises all portfolio artifacts to results/portfolio/.
 
     Artifacts:
         history.parquet:             Bar-by-bar equity curve + per-slot PnL columns.
         exposure.parquet:            Per-bar qty and notional per (slot, symbol).
-        strategy_pnl_daily.parquet:  Per-slot daily PnL resampled to calendar days.
+        strategy_pnl_daily.parquet:  Per-slot incremental daily PnL.
         trades.parquet:              All completed round-trip trades with slot metadata.
         metrics.json:                Scalar performance metrics dict.
         report.txt:                  Human-readable terminal report.
@@ -73,8 +77,21 @@ def save_portfolio_results(
         report_str: The formatted text report.
         metrics: Scalar metrics dict from PerformanceMetrics.
         slot_names: Optional {slot_id -> strategy class name} for manifest.
+        instrument_specs: Optional {symbol -> {multiplier, tick_size}} override.
+                          Falls back to BacktestSettings.instrument_specs.
     """
-    out = _portfolio_results_dir()
+    # Load instrument specs so gross_pnl is correctly scaled by the contract
+    # multiplier (e.g. 50 for ES, 100 for GC).  Without the multiplier, futures
+    # P&L is systematically understated by the multiplier factor.
+    _specs: Dict[str, Dict] = instrument_specs or {}
+    if not _specs:
+        try:
+            from src.backtest_engine.settings import BacktestSettings
+            _specs = BacktestSettings().instrument_specs
+        except Exception:
+            pass
+
+    out = _portfolio_results_dir(output_dir=output_dir)
     saved: List[str] = []
 
     # 1. Equity curve (includes slot_N_pnl columns from PortfolioBook)
@@ -115,12 +132,16 @@ def save_portfolio_results(
             inst_closes_df.to_parquet(out / "instrument_closes.parquet")
             saved.append("instrument_closes.parquet")
 
-    # 3. Per-slot daily PnL (resample slot_N_pnl columns to calendar day)
+    # 3. Per-slot incremental daily PnL derived from end-of-day slot snapshots.
     pnl_cols = [c for c in history.columns if c.startswith("slot_") and c.endswith("_pnl")]
     if pnl_cols:
         pnl_df = history[pnl_cols].copy()
         pnl_df.index = pd.DatetimeIndex(pnl_df.index)
-        pnl_daily = pnl_df.resample("D").last()   # total PnL snapshot at end of day
+        pnl_snapshots = pnl_df.resample("D").last().fillna(0.0)
+        pnl_daily = pnl_snapshots.diff()
+        if not pnl_daily.empty:
+            pnl_daily.iloc[0] = pnl_snapshots.iloc[0]
+        pnl_daily = pnl_daily.fillna(0.0)
         pnl_daily.to_parquet(out / "strategy_pnl_daily.parquet")
         saved.append("strategy_pnl_daily.parquet")
 
@@ -129,19 +150,24 @@ def save_portfolio_results(
     for slot_id, trades in slot_trades.items():
         strategy_name = (slot_names or {}).get(slot_id, f"slot_{slot_id}")
         for t in trades:
-            qty      = getattr(t, "quantity", 0)
-            ep       = getattr(t, "entry_price", 0.0)
-            xp       = getattr(t, "exit_price", 0.0)
-            comm     = getattr(t, "commission", 0.0)
-            slip     = getattr(t, "slippage", 0.0)
-            # gross_pnl = raw signal value before any execution costs
+            qty       = getattr(t, "quantity", 0)
+            ep        = getattr(t, "entry_price", 0.0)
+            xp        = getattr(t, "exit_price", 0.0)
+            comm      = getattr(t, "commission", 0.0)
+            slip      = getattr(t, "slippage", 0.0)
             direction = getattr(t, "direction", "LONG")
             sign      = 1.0 if direction == "LONG" else -1.0
-            gross_pnl = sign * (xp - ep) * abs(qty)
+            symbol    = getattr(t, "symbol", "")
+            # Look up the contract multiplier so gross_pnl is in real dollars.
+            # Without the multiplier, one ES point shows as $1 instead of $50.
+            spec       = _specs.get(symbol, {"multiplier": 1.0, "tick_size": 0.01})
+            multiplier = float(spec.get("multiplier", 1.0))
+            gross_pnl  = sign * (xp - ep) * abs(qty) * multiplier
+            net_pnl    = getattr(t, "pnl", 0.0)
             all_trade_rows.append({
                 "slot_id":       slot_id,
                 "strategy":      strategy_name,
-                "symbol":        getattr(t, "symbol", ""),
+                "symbol":        symbol,
                 "direction":     direction,
                 "entry_time":    getattr(t, "entry_time", None),
                 "exit_time":     getattr(t, "exit_time", None),
@@ -151,7 +177,7 @@ def save_portfolio_results(
                 "gross_pnl":     round(gross_pnl, 2),
                 "commission":    comm,
                 "slippage":      slip,
-                "pnl":           getattr(t, "pnl", 0.0),
+                "pnl":           net_pnl,
                 "exit_reason":   getattr(t, "exit_reason", ""),
             })
     if all_trade_rows:
@@ -165,12 +191,8 @@ def save_portfolio_results(
         saved.append("trades.parquet")
 
     # 5. Scalar metrics JSON
-    serialisable = {
-        k: (float(v) if hasattr(v, "__float__") else str(v))
-        for k, v in metrics.items()
-    }
     (out / "metrics.json").write_text(
-        json.dumps(serialisable, indent=2), encoding="utf-8"
+        dumps_json(metrics), encoding="utf-8"
     )
     saved.append("metrics.json")
 
@@ -183,15 +205,17 @@ def save_portfolio_results(
     manifest = {
         "run_type": "portfolio",
         "schema_version": SCHEMA_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(timezone.utc),
         "artifacts": saved,
         "slots": slot_names or {},
-        "slot_weights": slot_weights or {}
+        "slot_weights": slot_weights or {},
     }
-    with open(out / "manifest.json", "w", encoding="utf-8") as f:
-        f.write(json.dumps(manifest, indent=2, default=str))
+    if manifest_metadata:
+        manifest.update(manifest_metadata)
+    (out / "manifest.json").write_text(dumps_json(manifest), encoding="utf-8")
 
     # Run type marker for the dashboard
     (out.parent / ".run_type").write_text("portfolio", encoding="utf-8")
 
     print(f"[Portfolio Exporter] Results saved -> {out.resolve()}")
+    return out

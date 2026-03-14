@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import pandas as pd
@@ -539,12 +540,19 @@ class PortfolioBacktestEngine:
 
     # ── Results ────────────────────────────────────────────────────────────────
 
-    def show_results(self, benchmark: Optional[pd.DataFrame] = None) -> None:
+    def show_results(
+        self,
+        benchmark: Optional[pd.DataFrame] = None,
+        output_dir: Optional[Path] = None,
+        manifest_metadata: Optional[Dict[str, object]] = None,
+    ) -> None:
         """
         Computes metrics, prints the full report, and saves all result artifacts.
 
         Args:
             benchmark: Optional DataFrame with 'close' column for buy-and-hold comparison.
+            output_dir: Optional alternate artifact directory for scenario runs.
+            manifest_metadata: Optional extra metadata persisted into manifest.json.
         """
         from src.backtest_engine.analytics import PerformanceMetrics
 
@@ -575,4 +583,7 @@ class PortfolioBacktestEngine:
             slot_weights={
                 i: slot.weight for i, slot in enumerate(self.config.slots)
             },
+            instrument_specs=self.settings.instrument_specs,
+            output_dir=output_dir,
+            manifest_metadata=manifest_metadata,
         )

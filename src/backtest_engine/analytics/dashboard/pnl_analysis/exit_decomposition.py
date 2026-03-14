@@ -116,15 +116,22 @@ def build_pnl_decay_chart(trades: pd.DataFrame) -> go.Figure:
 
     # Base entry is 0m, 0 PnL (ignoring costs at exact t=0 for trajectory shape)
     x_vals = [0] + horizons
-    y_vals = [0.0]
-    
+    y_vals: list[Optional[float]] = [0.0]
+
     for h in horizons:
         col = f"pnl_decay_{h}m"
         if col in trades.columns:
             avg_pnl = trades[col].mean()
-            y_vals.append(avg_pnl if pd.notna(avg_pnl) else 0.0)
+            y_vals.append(float(avg_pnl) if pd.notna(avg_pnl) else None)
         else:
-            y_vals.append(0.0)
+            y_vals.append(None)
+
+    # Actual avg PnL at actual exit time (used for reference line and fallback)
+    actual_avg = float(trades["pnl"].mean()) if "pnl" in trades.columns else 0.0
+
+    # If decay data is missing, don't fake it (old behaviour showed a flat line at actual PnL).
+    if all(v is None for v in y_vals[1:]):
+        return _empty_fig("PnL Decay Not Available (missing pnl_decay_* enrichment)")
 
     def fmt_m(m):
         if m == 0: return "Entry"
@@ -133,9 +140,6 @@ def build_pnl_decay_chart(trades: pd.DataFrame) -> go.Figure:
         return f"{int(m/1440)}d"
 
     x_labels = [fmt_m(x) for x in x_vals]
-
-    # Actual avg PnL at actual exit time
-    actual_avg = trades["pnl"].mean()
 
     fig.add_trace(go.Scatter(
         x=x_labels,

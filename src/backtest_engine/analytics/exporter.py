@@ -18,17 +18,19 @@ Files written per run:
     results/benchmark.parquet — buy-and-hold price series (optional)
     results/report.txt        — verbatim terminal report string
     results/metrics.json      — KPIs as a JSON object
+    results/manifest.json     — run metadata and dashboard context
 """
 
 from __future__ import annotations
 
-import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from src.backtest_engine.settings import BacktestSettings
+from src.backtest_engine.serialization import dumps_json
 
 
 def save_backtest_results(
@@ -88,28 +90,38 @@ def save_backtest_results(
             if isinstance(t, dict):
                 rows.append(t)
             else:
+                symbol    = getattr(t, "symbol",      "")
+                ep        = getattr(t, "entry_price", 0.0)
+                xp        = getattr(t, "exit_price",  0.0)
+                qty       = getattr(t, "quantity",    0.0)
+                direction = getattr(t, "direction",   "")
+                sign      = 1.0 if direction == "LONG" else -1.0
+                spec      = _settings.get_instrument_spec(symbol)
+                multiplier = float(spec.get("multiplier", 1.0))
+                gross_pnl = sign * (xp - ep) * abs(qty) * multiplier
                 rows.append({
-                    "symbol":      getattr(t, "symbol",      ""),
-                    "entry_price": getattr(t, "entry_price", 0.0),
-                    "exit_price":  getattr(t, "exit_price",  0.0),
-                    "quantity":    getattr(t, "quantity",    0.0),
+                    "symbol":      symbol,
+                    "entry_price": ep,
+                    "exit_price":  xp,
+                    "quantity":    qty,
                     "commission":  getattr(t, "commission",  0.0),
                     "slippage":    getattr(t, "slippage",    0.0),
                     "entry_time":  getattr(t, "entry_time",  None),
                     "exit_time":   getattr(t, "exit_time",   None),
-                    "direction":   getattr(t, "direction",   ""),
+                    "direction":   direction,
+                    "gross_pnl":   round(gross_pnl, 2),
                     "pnl":         getattr(t, "pnl",         0.0),
                     "exit_reason": getattr(t, "exit_reason", ""),
                 })
-        
+
         trades_df = pd.DataFrame(rows)
         if not trades_df.empty and data_map:
             trades_df = enrich_trades_with_exit_analytics(
-                trades_df, 
-                data_map, 
-                **vol_params
+                trades_df,
+                data_map,
+                **vol_params,
             )
-            
+
         trades_df.to_parquet(results_dir / "trades.parquet", index=False)
 
     # Benchmark
@@ -119,23 +131,39 @@ def save_backtest_results(
     # Text report
     (results_dir / "report.txt").write_text(report_str, encoding="utf-8")
 
-    # Metrics JSON (numpy scalars must be cast for JSON serialisation)
-    json_metrics: Dict[str, Any] = {
-        k: float(v) if isinstance(v, (float, int)) else str(v)
-        for k, v in metrics.items()
-    }
+    # Metrics JSON
     (results_dir / "metrics.json").write_text(
-        json.dumps(json_metrics, indent=2), encoding="utf-8"
+        dumps_json(metrics), encoding="utf-8"
     )
 
-    # Save vol_params to manifest for dashboard context
-    manifest_extras = {
-        "vol_regime_config": vol_params
+    # Save dashboard reconstruction context into a manifest artifact.
+    saved_artifacts: List[str] = ["report.txt", "metrics.json", "manifest.json"]
+    if not history.empty:
+        saved_artifacts.insert(0, "history.parquet")
+    if trades:
+        saved_artifacts.append("trades.parquet")
+    if benchmark is not None:
+        saved_artifacts.append("benchmark.parquet")
+
+    manifest = {
+        "run_type": "single",
+        "schema_version": "1.0",
+        "generated_at": datetime.now(timezone.utc),
+        "artifacts": saved_artifacts,
+        "strategy_class": strategy.__class__.__name__ if strategy is not None else None,
+        "vol_regime_config": vol_params,
+        "settings_context": {
+            "default_symbol": _settings.default_symbol,
+            "results_dir": results_dir,
+        },
     }
+    (results_dir / "manifest.json").write_text(
+        dumps_json(manifest), encoding="utf-8"
+    )
 
     # Run type marker for the dashboard
     base_results_dir = _settings.base_dir / _settings.results_dir
     (base_results_dir / ".run_type").write_text("single", encoding="utf-8")
 
-    print(f"[Exporter] Results saved → {results_dir}")
+    print(f"[Exporter] Results saved -> {results_dir}")
     return results_dir

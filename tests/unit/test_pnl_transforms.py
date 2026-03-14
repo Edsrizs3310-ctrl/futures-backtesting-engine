@@ -148,15 +148,15 @@ def test_strategy_correlation_diagonal_is_one() -> None:
                 )
 
 
-# ── Test 4: VaR 95% is <= 0 for mixed PnL ────────────────────────────────────
+# ── Test 4: VaR 95% is a positive loss magnitude ─────────────────────────────
 
-def test_pnl_dist_stats_var_is_non_positive() -> None:
+def test_pnl_dist_stats_var_is_positive_loss_magnitude() -> None:
     """
-    Ensures that the historical VaR 95% is <= 0 when the PnL series contains
-    losses (which it must for any realistic strategy).
+    Ensures that the historical VaR 95% is reported as a positive loss
+    magnitude when the PnL series contains losses.
 
-    VaR is the 5th percentile of the daily PnL distribution.
-    If there are any losing days, the 5th percentile must be negative.
+    VaR is derived from the lower-tail percentile of daily PnL, but the
+    dashboard-facing convention is to expose loss magnitude as a positive value.
     """
     rng = np.random.default_rng(42)
     daily = pd.Series(rng.normal(0, 100, 250))  # plenty of negative values
@@ -164,13 +164,13 @@ def test_pnl_dist_stats_var_is_non_positive() -> None:
     dist_stats = compute_pnl_dist_stats(daily)
 
     assert "var_95" in dist_stats
-    assert dist_stats["var_95"] <= 0, (
-        f"VaR 95% = {dist_stats['var_95']:.2f} — expected <= 0 for mixed PnL series."
+    assert dist_stats["var_95"] >= 0, (
+        f"VaR 95% = {dist_stats['var_95']:.2f} — expected positive loss magnitude."
     )
-    # CVaR (Expected Shortfall) must be even more negative than VaR
+    # CVaR (Expected Shortfall) must be at least as large as VaR in loss terms.
     if not np.isnan(dist_stats.get("cvar_95", float("nan"))):
-        assert dist_stats["cvar_95"] <= dist_stats["var_95"], (
-            "CVaR must be <= VaR 95% (Expected Shortfall >= VaR by definition)."
+        assert dist_stats["cvar_95"] >= dist_stats["var_95"], (
+            "CVaR must be >= VaR 95% when both are expressed as positive loss magnitudes."
         )
 
 

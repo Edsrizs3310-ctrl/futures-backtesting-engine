@@ -12,6 +12,7 @@ from src.backtest_engine.analytics.dashboard.core.transforms import (
     build_risk_profile,
     build_strategy_equity_curve,
     compute_drawdown_episodes,
+    compute_stress_scenarios,
 )
 from src.backtest_engine.analytics.dashboard.risk_analysis.models import StressMultipliers
 
@@ -78,13 +79,47 @@ def test_build_risk_profile_returns_tail_metrics_and_stress_results() -> None:
     )
 
     assert profile.label == "Test Strategy"
-    assert profile.summary["var_primary"] <= 0.0
-    assert profile.summary["es_primary"] <= profile.summary["var_primary"]
+    assert profile.summary["var_primary"] >= 0.0
+    assert profile.summary["es_primary"] >= profile.summary["var_primary"]
     assert not profile.rolling_var.empty
     assert not profile.rolling_vol.empty
     assert len(profile.stress_results) == 5
 
     results_by_name = {scenario.name: scenario for scenario in profile.stress_results}
     assert set(results_by_name) == {"baseline", "volatility", "slippage", "commission", "combined"}
+    assert results_by_name["baseline"].equity.iloc[0] == equity.iloc[0]
+    assert results_by_name["combined"].equity.iloc[0] == equity.iloc[0]
     assert results_by_name["combined"].metrics["final_pnl"] <= results_by_name["baseline"].metrics["final_pnl"]
     assert results_by_name["combined"].metrics["max_drawdown_pct"] >= results_by_name["baseline"].metrics["max_drawdown_pct"]
+
+
+def test_stress_scenarios_allow_sub_one_cost_multipliers_and_keep_anchor() -> None:
+    """Stress preview must keep the initial equity anchor and support lower cost levels coherently."""
+    idx = pd.date_range("2024-01-01", periods=4, freq="1D")
+    daily_equity = pd.Series([100_000.0, 100_100.0, 100_050.0, 100_200.0], index=idx)
+    daily_pnl = daily_equity.diff().fillna(0.0)
+    trades = pd.DataFrame(
+        {
+            "symbol": ["ES", "ES"],
+            "commission": [10.0, 10.0],
+            "slippage": [25.0, 25.0],
+            "exit_time": idx[[1, 3]],
+        }
+    )
+
+    results = compute_stress_scenarios(
+        daily_equity=daily_equity,
+        daily_pnl=daily_pnl,
+        trades_df=trades,
+        instrument_specs={"ES": {"multiplier": 50.0}},
+        stress_multipliers=StressMultipliers(volatility=1.0, slippage=0.5, commission=0.5),
+        primary_confidence=0.95,
+        tail_confidence=0.99,
+        risk_free_rate=0.0,
+    )
+
+    results_by_name = {scenario.name: scenario for scenario in results}
+    assert results_by_name["slippage"].equity.iloc[0] == daily_equity.iloc[0]
+    assert results_by_name["commission"].equity.iloc[0] == daily_equity.iloc[0]
+    assert results_by_name["combined"].equity.iloc[0] == daily_equity.iloc[0]
+    assert results_by_name["combined"].metrics["final_pnl"] > results_by_name["baseline"].metrics["final_pnl"]

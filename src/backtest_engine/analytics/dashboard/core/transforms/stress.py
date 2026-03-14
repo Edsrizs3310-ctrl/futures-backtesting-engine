@@ -9,7 +9,15 @@ def _build_trade_cost_series(
     trades_df: Optional[pd.DataFrame],
     instrument_specs: Dict[str, Dict[str, float]],
 ) -> tuple[pd.Series, pd.Series]:
-    """Aggregates daily commission and slippage costs from trade records."""
+    """
+    Aggregates daily commission and slippage costs from trade records.
+
+    Methodology:
+        Exported trade artifacts store `commission` and `slippage` as positive
+        dollar cost magnitudes at the completed-trade level. The daily stress
+        preview therefore sums those stored dollar costs directly without
+        guessing per-contract units in the dashboard layer.
+    """
     if trades_df is None or trades_df.empty or "exit_time" not in trades_df.columns:
         return pd.Series(dtype=float), pd.Series(dtype=float)
 
@@ -27,12 +35,7 @@ def _build_trade_cost_series(
     )
 
     if "slippage" in df.columns:
-        multiplier_s = df["symbol"].map(
-            lambda symbol: float(instrument_specs.get(str(symbol), {}).get("multiplier", 1.0))
-        )
-        quantity_s = df["quantity"].abs().fillna(0.0) if "quantity" in df.columns else 0.0
-        slippage_cost = df["slippage"].abs().fillna(0.0) * quantity_s * multiplier_s
-        slippage_daily = slippage_cost.groupby(daily_index).sum().astype(float)
+        slippage_daily = df.groupby(daily_index)["slippage"].sum().abs().astype(float)
     else:
         slippage_daily = pd.Series(dtype=float)
 
@@ -49,6 +52,43 @@ def _build_equity_from_daily_pnl(initial_equity: float, daily_pnl: pd.Series) ->
     if daily_pnl is None or daily_pnl.empty:
         return pd.Series(dtype=float)
     return pd.Series(initial_equity + daily_pnl.astype(float).cumsum(), index=daily_pnl.index)
+
+
+def _preserve_anchor(daily_pnl: pd.Series) -> pd.Series:
+    """
+    Preserves the baseline first-period equity anchor across all scenarios.
+
+    Methodology:
+        The first daily PnL sample in the risk pipeline is a synthetic 0.0 anchor
+        created by `diff().fillna(0.0)`, not a real realized increment. Stress
+        transformations should never modify that first point, otherwise the
+        stressed curve starts from a different effective equity than baseline.
+    """
+    anchored = daily_pnl.astype(float).copy()
+    if not anchored.empty:
+        anchored.iloc[0] = 0.0
+    return anchored
+
+
+def _apply_volatility_preview(clean_pnl: pd.Series, multiplier: float) -> pd.Series:
+    """
+    Applies the volatility preview while keeping the equity anchor unchanged.
+
+    Methodology:
+        Only true realized increments after the first anchor point are demeaned
+        and rescaled. The preview contract is: multiplier 1.0 = baseline
+        dispersion, >1.0 amplifies dispersion, and <1.0 compresses dispersion.
+    """
+    anchored = _preserve_anchor(clean_pnl)
+    if len(anchored) <= 1:
+        return anchored
+
+    stressed = anchored.copy()
+    realized = anchored.iloc[1:]
+    mean_pnl = float(realized.mean())
+    centered_pnl = realized - mean_pnl
+    stressed.iloc[1:] = mean_pnl + centered_pnl * float(multiplier)
+    return stressed
 
 def _build_scenario_metrics(
     equity: pd.Series,
@@ -88,10 +128,15 @@ def compute_stress_scenarios(
     Builds baseline and stressed risk scenarios from the realised daily PnL path.
 
     Methodology:
-        Volatility stress scales the demeaned daily PnL path, preserving the
-        realised average drift while amplifying dispersion. Slippage and
-        commission stresses add only the incremental trading cost above the
-        realised baseline so the scenario remains anchored to the original run.
+        Volatility preview scales the demeaned realized daily PnL path while
+        preserving the baseline first-period equity anchor. Commission and
+        slippage multipliers represent total cost levels relative to the
+        realized baseline:
+            - 1.0 keeps realized costs unchanged,
+            - 2.0 doubles realized costs,
+            - 0.5 halves realized costs.
+        The preview never reruns fills, signals, or sizing; it transforms the
+        realized daily PnL path only.
     """
     if daily_equity is None or daily_equity.dropna().empty or daily_pnl is None or daily_pnl.empty:
         return []
@@ -104,28 +149,27 @@ def compute_stress_scenarios(
     commission_daily = _align_series_to_index(commission_daily, clean_pnl.index)
     slippage_daily = _align_series_to_index(slippage_daily, clean_pnl.index)
 
-    mean_pnl = float(clean_pnl.mean())
-    centered_pnl = clean_pnl - mean_pnl
-
-    extra_commission = commission_daily * max(stress_multipliers.commission - 1.0, 0.0)
-    extra_slippage = slippage_daily * max(stress_multipliers.slippage - 1.0, 0.0)
+    baseline_pnl = _preserve_anchor(clean_pnl)
+    volatility_pnl = _apply_volatility_preview(clean_pnl, stress_multipliers.volatility)
+    commission_adjustment = commission_daily * (float(stress_multipliers.commission) - 1.0)
+    slippage_adjustment = slippage_daily * (float(stress_multipliers.slippage) - 1.0)
 
     scenario_map = {
-        "baseline": clean_pnl,
-        "volatility": mean_pnl + centered_pnl * stress_multipliers.volatility,
-        "slippage": clean_pnl - extra_slippage,
-        "commission": clean_pnl - extra_commission,
-        "combined": mean_pnl + centered_pnl * stress_multipliers.volatility - extra_slippage - extra_commission,
+        "baseline": baseline_pnl,
+        "volatility": volatility_pnl,
+        "slippage": baseline_pnl - slippage_adjustment,
+        "commission": baseline_pnl - commission_adjustment,
+        "combined": volatility_pnl - slippage_adjustment - commission_adjustment,
     }
     scenario_labels = {
         "baseline": "Baseline",
-        "volatility": f"Volatility x{stress_multipliers.volatility:.1f}",
-        "slippage": f"Slippage x{stress_multipliers.slippage:.1f}",
-        "commission": f"Commission x{stress_multipliers.commission:.1f}",
-        "combined": "Combined shock",
+        "volatility": f"Volatility Preview x{stress_multipliers.volatility:.1f}",
+        "slippage": f"Slippage Preview x{stress_multipliers.slippage:.1f}",
+        "commission": f"Commission Preview x{stress_multipliers.commission:.1f}",
+        "combined": "Combined Preview Shock",
     }
 
-    baseline_final_pnl = float(clean_pnl.sum())
+    baseline_final_pnl = float(baseline_pnl.sum())
     results: List[StressScenarioResult] = []
     for name, scenario_pnl in scenario_map.items():
         scenario_equity = _build_equity_from_daily_pnl(initial_equity, scenario_pnl)

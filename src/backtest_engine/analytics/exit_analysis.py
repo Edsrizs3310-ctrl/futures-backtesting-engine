@@ -66,16 +66,76 @@ def enrich_trades_with_exit_analytics(
     df["vol_min_pct"] = _min_p
     df["vol_max_pct"] = _max_p
 
-    # Group by symbol to pre-calculate volatility and handle lookups efficiently
-    for (slot_id, symbol), group in df.groupby(["slot_id", "symbol"], dropna=False):
-        # Determine data map key
-        df_sym = data_map.get((slot_id, symbol)) if slot_id is not None else None
-        if df_sym is None or df_sym.empty:
-            df_sym = data_map.get(symbol)
-            
+    def _norm_slot_id(value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        return value
+
+    def _to_np_dt64(value: Any) -> np.datetime64:
+        # np.searchsorted on datetime64 arrays does not accept pd.Timestamp directly.
+        # Cast everything to numpy datetime64 for stable comparisons.
+        # Normalize to naive UTC to avoid timezone mismatch with data index.
+        ts = pd.Timestamp(value)
+        if ts.tz is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        return np.datetime64(ts.to_datetime64())
+
+    def _resolve_data_for_symbol(sym: Any, slot: Any) -> Optional[pd.DataFrame]:
+        """Resolve OHLCV DataFrame for symbol from data_map (single or portfolio keying)."""
+        sym_str = str(sym) if sym is not None else ""
+        # Portfolio mode: (slot_id, symbol)
+        if slot is not None:
+            out = data_map.get((slot, sym))
+            if out is not None and not out.empty:
+                return out
+            out = data_map.get((slot, sym_str))
+            if out is not None and not out.empty:
+                return out
+        # Single-asset mode: symbol-only key
+        out = data_map.get(sym)
+        if out is not None and not out.empty:
+            return out
+        out = data_map.get(sym_str)
+        if out is not None and not out.empty:
+            return out
+        # Fallback: scan for any key containing this symbol
+        for k, v in data_map.items():
+            if v is None or v.empty:
+                continue
+            if k == sym or k == sym_str:
+                return v
+            if isinstance(k, tuple) and len(k) >= 2 and (k[1] == sym or k[1] == sym_str):
+                return v
+        return None
+
+    group_cols = ["symbol"] if "slot_id" not in df.columns else ["slot_id", "symbol"]
+
+    # Group by symbol (and slot_id in portfolio mode) to pre-calculate volatility and handle lookups efficiently
+    for keys, group in df.groupby(group_cols, dropna=False):
+        if len(group_cols) == 2:
+            slot_id, symbol = keys
+        else:
+            # Single column: keys is a 1-tuple e.g. ('ES',), not the raw value
+            slot_id = None
+            symbol = keys[0] if isinstance(keys, tuple) else keys
+
+        slot_id = _norm_slot_id(slot_id)
+        df_sym = _resolve_data_for_symbol(symbol, slot_id)
+
         if df_sym is None or df_sym.empty:
             continue
-            
+
+        # Normalize index to naive UTC for searchsorted compatibility with trade timestamps
+        idx = df_sym.index
+        if hasattr(idx, "tz") and idx.tz is not None:
+            df_sym = df_sym.copy()
+            df_sym.index = idx.tz_convert("UTC").tz_localize(None)
+
         # Ensure monotonic index for searchsorted
         if not df_sym.index.is_monotonic_increasing:
             df_sym = df_sym.sort_index()
@@ -92,29 +152,42 @@ def enrich_trades_with_exit_analytics(
         # Pre-cache index for searchsorted
         idx_array = df_sym.index.values
 
-        for idx in group.index:
-            row = df.loc[idx]
+        # Pre-cache index for searchsorted
+        idx_array = df_sym.index.values
+
+        for row_idx in group.index:
+            row = df.loc[row_idx]
             entry = row.get("entry_time")
             exit_ = row.get("exit_time")
             entry_price = row.get("entry_price")
             direction = row.get("direction", "LONG")
             sign = 1.0 if direction == "LONG" else -1.0
             qty = abs(float(row.get("quantity", 1.0)))
+            if symbol not in multiplier_cache:
+                if settings is not None:
+                    multiplier_cache[symbol] = float(settings.get_instrument_spec(str(symbol)).get("multiplier", 1.0))
+                else:
+                    multiplier_cache[symbol] = 1.0
             multiplier = multiplier_cache.get(symbol, 1.0)
             
             if pd.isna(entry) or pd.isna(exit_) or pd.isna(entry_price):
                 continue
                 
-            df.at[idx, "holding_time"] = exit_ - entry
+            df.at[row_idx, "holding_time"] = exit_ - entry
             
             # Round trip costs
             comm = row.get("commission", 0.0)
             slip = row.get("slippage", 0.0)
             costs = (0.0 if pd.isna(comm) else float(comm)) + (0.0 if pd.isna(slip) else float(slip))
             
-            # MFE / MAE (Slicing is generally fast enough if done efficiently)
+            # MFE / MAE starts strictly after entry so pre-position entry-bar
+            # highs/lows are never counted in the excursion window.
             try:
-                trade_bars = df_sym.loc[entry:exit_]
+                entry_dt = _to_np_dt64(entry)
+                exit_dt = _to_np_dt64(exit_)
+                start_pos = np.searchsorted(idx_array, entry_dt, side='right')
+                end_pos = np.searchsorted(idx_array, exit_dt, side='right')
+                trade_bars = df_sym.iloc[start_pos:end_pos]
                 if not trade_bars.empty:
                     max_p = trade_bars["high"].max()
                     min_p = trade_bars["low"].min()
@@ -126,19 +199,19 @@ def enrich_trades_with_exit_analytics(
                         mfe = (entry_price - min_p) * qty * multiplier
                         mae = (entry_price - max_p) * qty * multiplier
                         
-                    df.at[idx, "mfe"] = float(mfe if mfe > 0 else 0.0)
-                    df.at[idx, "mae"] = float(mae if mae < 0 else 0.0)
+                    df.at[row_idx, "mfe"] = float(mfe if mfe > 0 else 0.0)
+                    df.at[row_idx, "mae"] = float(mae if mae < 0 else 0.0)
             except Exception:
                 pass
 
             # Entry Volatility (Calculated from pre-cached rolling_vol)
             try:
                 # searchsorted with side='right' and minus 1 mimics method='pad'
-                target_dt = np.datetime64(entry)
+                target_dt = _to_np_dt64(entry)
                 pos = np.searchsorted(idx_array, target_dt, side='right') - 1
                 if pos >= 0:
                     val = rolling_vol.iloc[pos]
-                    df.at[idx, "entry_volatility"] = float(val)
+                    df.at[row_idx, "entry_volatility"] = float(val)
             except Exception:
                 pass
 
@@ -147,11 +220,12 @@ def enrich_trades_with_exit_analytics(
                 target_time = entry + pd.Timedelta(minutes=minutes)
                 col_name = f"pnl_decay_{minutes}m"
                 try:
-                    pos = np.searchsorted(idx_array, target_time, side='right') - 1
+                    target_dt = _to_np_dt64(target_time)
+                    pos = np.searchsorted(idx_array, target_dt, side='right') - 1
                     if pos >= 0:
                         hypo_price = df_sym.iloc[pos]["close"]
                         hypo_gross = sign * (hypo_price - entry_price) * qty * multiplier
-                        df.at[idx, col_name] = float(hypo_gross - costs)
+                        df.at[row_idx, col_name] = float(hypo_gross - costs)
                 except Exception:
                     pass
     

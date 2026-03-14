@@ -97,6 +97,9 @@ def compute_var_es_metrics(
     Methodology:
         Uses historical simulation on daily PnL so the risk numbers preserve
         the empirical asymmetry and fat tails of the realised strategy path.
+        Dashboard-facing values are returned as positive loss magnitudes, not as
+        negative tail quantiles, so table and card comparisons use one explicit
+        convention.
     """
     if daily_pnl is None or daily_pnl.dropna().empty:
         return {
@@ -107,17 +110,22 @@ def compute_var_es_metrics(
         }
 
     clean = daily_pnl.dropna().astype(float)
-    var_primary = float(clean.quantile(1.0 - primary_confidence))
-    var_tail = float(clean.quantile(1.0 - tail_confidence))
+    var_primary_threshold = float(clean.quantile(1.0 - primary_confidence))
+    var_tail_threshold = float(clean.quantile(1.0 - tail_confidence))
 
-    es_primary_tail = clean[clean <= var_primary]
-    es_tail_tail = clean[clean <= var_tail]
+    es_primary_tail = clean[clean <= var_primary_threshold]
+    es_tail_tail = clean[clean <= var_tail_threshold]
+
+    var_primary = max(0.0, -var_primary_threshold)
+    var_tail = max(0.0, -var_tail_threshold)
+    es_primary = max(0.0, -float(es_primary_tail.mean())) if not es_primary_tail.empty else float("nan")
+    es_tail = max(0.0, -float(es_tail_tail.mean())) if not es_tail_tail.empty else float("nan")
 
     return {
         "var_primary": var_primary,
-        "es_primary": float(es_primary_tail.mean()) if not es_primary_tail.empty else float("nan"),
+        "es_primary": es_primary,
         "var_tail": var_tail,
-        "es_tail": float(es_tail_tail.mean()) if not es_tail_tail.empty else float("nan"),
+        "es_tail": es_tail,
     }
 
 def _expected_shortfall_from_array(values: np.ndarray, confidence: float) -> float:
@@ -129,7 +137,9 @@ def _expected_shortfall_from_array(values: np.ndarray, confidence: float) -> flo
 
     threshold = float(np.quantile(arr, 1.0 - confidence))
     tail = arr[arr <= threshold]
-    return float(tail.mean()) if tail.size > 0 else float("nan")
+    if tail.size == 0:
+        return float("nan")
+    return max(0.0, -float(tail.mean()))
 
 def compute_rolling_var_es(
     daily_pnl: pd.Series,
@@ -154,8 +164,10 @@ def compute_rolling_var_es(
 
     frame = pd.DataFrame(index=clean.index)
     frame["pnl"] = clean
-    frame["var_primary"] = rolling.quantile(1.0 - primary_confidence)
-    frame["var_tail"] = rolling.quantile(1.0 - tail_confidence)
+    frame["var_primary"] = -rolling.quantile(1.0 - primary_confidence)
+    frame["var_tail"] = -rolling.quantile(1.0 - tail_confidence)
+    frame["var_primary"] = frame["var_primary"].clip(lower=0.0)
+    frame["var_tail"] = frame["var_tail"].clip(lower=0.0)
     frame["es_primary"] = rolling.apply(
         lambda values: _expected_shortfall_from_array(values, primary_confidence),
         raw=True,
@@ -164,8 +176,8 @@ def compute_rolling_var_es(
         lambda values: _expected_shortfall_from_array(values, tail_confidence),
         raw=True,
     )
-    frame["breach_primary"] = frame["pnl"] <= frame["var_primary"]
-    frame["breach_tail"] = frame["pnl"] <= frame["var_tail"]
+    frame["breach_primary"] = frame["pnl"] <= -frame["var_primary"]
+    frame["breach_tail"] = frame["pnl"] <= -frame["var_tail"]
     return frame
 
 def compute_rolling_volatility(

@@ -66,7 +66,8 @@ def build_pnl_distribution_figure(
 
     Methodology:
         - Histogram split into negative (red) and positive (green) bars.
-        - VaR 95% and VaR 99% drawn as vertical dashed lines ON the chart
+        - VaR 95% and VaR 99% are stored as positive loss magnitudes and drawn
+          on the negative PnL axis as vertical dashed lines
           so the tail thresholds are spatially visible in the distribution.
         - Stats (skew, kurt, VaR 95%, CVaR 95%) annotated inside the chart.
 
@@ -109,7 +110,7 @@ def build_pnl_distribution_figure(
 
         if not np.isnan(var95):
             fig.add_vline(
-                x=var95, line_dash="dot", line_color=PALETTE["var_95"],
+                x=-var95, line_dash="dot", line_color=PALETTE["var_95"],
                 line_width=1.8,
                 annotation_text=f"VaR 95%<br>${var95:,.0f}",
                 annotation_position="top left",
@@ -118,7 +119,7 @@ def build_pnl_distribution_figure(
             )
         if not np.isnan(var99):
             fig.add_vline(
-                x=var99, line_dash="dot", line_color=PALETTE["var_99"],
+                x=-var99, line_dash="dot", line_color=PALETTE["var_99"],
                 line_width=1.8,
                 annotation_text=f"VaR 99%<br>${var99:,.0f}",
                 annotation_position="bottom left",

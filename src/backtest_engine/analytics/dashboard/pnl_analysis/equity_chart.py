@@ -145,20 +145,7 @@ def build_portfolio_equity_figure(
             y_vals = history[col_name].tolist()
             color  = STRATEGY_COLORS[i % len(STRATEGY_COLORS)]
             summ   = (strategy_summaries or {}).get(strat_name, {})
-            n      = len(idx)
-            # Helper to format p-values with color
-            def fmt_pval(val):
-                if val == "N/A" or val is None:
-                    return "N/A"
-                # Plotly explicitly requires double-quotes for HTML attributes in hovertemplates
-                return '<span style="color:green">OK</span>' if float(val) < 0.05 else '<span style="color:red">FAIL</span>'
-
-            # Pre-calculate colors for the entire series (it's the same per strategy)
-            pval_col = fmt_pval(summ.get("pvalue", 1.0))
-            alpha_col = fmt_pval(summ.get("alpha_p", 1.0))
-            beta_col = fmt_pval(summ.get("beta_p", 1.0))
-
-            def _fmt(val, fmt_str):
+            def _fmt(val: object, fmt_str: str) -> str:
                 if val == "N/A" or val is None:
                     return "N/A"
                 try:
@@ -167,25 +154,30 @@ def build_portfolio_equity_figure(
                     return str(val)
 
             hover = (
-                f"<b>{strat_name}</b><br>PnL at cursor: <b>$%{{y:,.0f}}</b><br>"
-                "<extra>"
+                f"<b>{strat_name}</b><br>"
+                f"PnL at cursor: <b>$%{{y:,.0f}}</b><br>"
                 f"Total PnL: ${_fmt(summ.get('total_pnl', 'N/A'), ',.0f')}<br>"
                 f"Trades: {summ.get('trade_count', 'N/A')}<br>"
                 f"Win Rate: {_fmt(summ.get('win_rate', 'N/A'), '.1f')}%<br>"
                 f"Avg Trade: ${_fmt(summ.get('avg_trade', 'N/A'), ',.0f')}<br>"
-                f"Max Loss: ${_fmt(summ.get('max_loss', 'N/A'), ',.0f')}<br><br>"
-                "--- Stat tests ---<br>"
+                f"Max Loss: ${_fmt(summ.get('max_loss', 'N/A'), ',.0f')}<br>"
+                f"<br>--- Stat tests ---<br>"
                 f"T-stat: {_fmt(summ.get('tstat', 'N/A'), '.2f')}<br>"
-                f"p-value: {_fmt(summ.get('pvalue', 'N/A'), '.3f')} {pval_col}<br>"
+                f"p-value: {_fmt(summ.get('pvalue', 'N/A'), '.3f')}<br>"
                 f"Alpha (Ann): {_fmt(summ.get('alpha', 'N/A'), '.1f')}%<br>"
-                f"Alpha p-value: {_fmt(summ.get('alpha_p', 'N/A'), '.3f')} {alpha_col}<br>"
+                f"Alpha p-value: {_fmt(summ.get('alpha_p', 'N/A'), '.3f')}<br>"
                 f"Beta: {_fmt(summ.get('beta', 'N/A'), '.2f')}<br>"
-                f"Beta p-value: {_fmt(summ.get('beta_p', 'N/A'), '.3f')} {beta_col}"
-                "</extra>"
+                f"Beta p-value: {_fmt(summ.get('beta_p', 'N/A'), '.3f')}"
+                "<extra></extra>"
             )
             _add(go.Scatter(
                 x=idx, y=y_vals,
                 hovertemplate=hover,
+                hoverlabel=dict(
+                    bgcolor="#FFFFFF",
+                    bordercolor="#CCCCCC",
+                    font=dict(color="#000000", size=11),
+                ),
                 mode="lines",
                 name=f"{strat_name} (S{str_slot_id})",
                 line=dict(color=color, width=1.2),

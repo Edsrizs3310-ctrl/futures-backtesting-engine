@@ -11,12 +11,14 @@
 #   Strategy signals still evaluate every bar (intraday).
 #
 # Sizing methodology:
-#   Vol-targeting: each slot receives (equity * weight) dollars, then scaled so
-#   annualised portfolio vol matches target_portfolio_vol.
-#   Size in contracts = round(slot_equity * vol_scalar / (price * tick_size))
-#   where tick_size is the dollar value per minimum price move (from settings.py
-#   instrument_specs).  This mirrors prop-desk futures sizing (risk per tick, not
-#   full notional).  Result is capped at max_contracts_per_slot per (slot, symbol).
+#   Vol-targeting: each slot receives (equity * weight) dollars, then converts
+#   the annualized risk budget into contracts using the annualized dollar
+#   volatility of one full contract:
+#       contracts = round(
+#           (slot_equity * target_portfolio_vol)
+#           / (annualised_vol * price * multiplier)
+#       )
+#   Result is capped at max_contracts_per_slot per (slot, symbol).
 #
 # Shared settings (commission_rate, max_slippage_ticks, kill-switch thresholds,
 # eod_close_time, trading hours) live in settings.py — no duplication here.

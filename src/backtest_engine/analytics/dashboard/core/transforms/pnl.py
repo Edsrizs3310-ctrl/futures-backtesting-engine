@@ -68,6 +68,7 @@ def resample_pnl_to_horizon(
 def compute_pnl_dist_stats(
     daily_pnl: pd.Series,
     var_confidence: float = 0.95,
+    tail_confidence: float = 0.99,
 ) -> Dict[str, float]:
     """
     Computes distribution statistics for the daily PnL series.
@@ -75,13 +76,14 @@ def compute_pnl_dist_stats(
     Methodology:
         skew     — Fisher skewness (positive = right tail, preferred for long).
         kurtosis — Excess kurtosis (Fisher). > 0 = fat tails vs normal.
-        VaR      — Historical percentile (non-parametric).
-        CVaR     — Conditional VaR (Expected Shortfall):
-                   mean of losses beyond the VaR threshold.
+        VaR / CVaR are returned as positive loss magnitudes for dashboard
+        display. Negative tail quantiles from raw PnL space are converted
+        explicitly so cards and annotations use one sign convention.
 
     Args:
         daily_pnl: Daily net PnL series (not cumulative).
-        var_confidence: Confidence level for VaR (default 0.95).
+        var_confidence: Primary confidence level for VaR / CVaR (default 0.95).
+        tail_confidence: Tail VaR confidence level (default 0.99).
 
     Returns:
         Dict with keys: skew, kurtosis, var_95, cvar_95, var_99, mean, std.
@@ -97,9 +99,13 @@ def compute_pnl_dist_stats(
     skew_val: float  = float(stats.skew(clean))
     kurt_val: float  = float(stats.kurtosis(clean))  # excess (Fisher)
 
-    var_95:  float = float(clean.quantile(1 - var_confidence))   # 5th pct
-    var_99:  float = float(clean.quantile(0.01))                  # 1st pct
-    cvar_95: float = float(clean[clean <= var_95].mean())
+    var_95_threshold = float(clean.quantile(1 - var_confidence))
+    var_99_threshold = float(clean.quantile(1 - tail_confidence))
+    cvar_tail = clean[clean <= var_95_threshold]
+
+    var_95 = max(0.0, -var_95_threshold)
+    var_99 = max(0.0, -var_99_threshold)
+    cvar_95 = max(0.0, -float(cvar_tail.mean())) if not cvar_tail.empty else float("nan")
 
     return {
         "skew":     round(skew_val, 4),

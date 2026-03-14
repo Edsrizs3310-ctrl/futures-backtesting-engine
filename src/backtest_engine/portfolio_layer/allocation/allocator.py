@@ -8,17 +8,20 @@ price history, compute TargetPosition quantities for each (slot, symbol) pair
 using volatility-targeting methodology.
 
 Methodology (per slot, per symbol):
-    1.  slot_equity     = total_equity * slot.weight
-    2.  instrument_vol  = annualised rolling stddev of close-to-close returns
-                          over the last vol_lookback_bars bars.
-    3.  vol_scalar      = target_portfolio_vol / instrument_vol
-    4.  dollar_risk     = slot_equity * vol_scalar
-    5.  contracts       = round(dollar_risk / (price * tick_size))
-    6.  contracts       = min(contracts, max_contracts_per_slot)
-    7.  signed_qty      = contracts * signal.direction
+    1.  slot_equity        = total_equity * slot.weight
+    2.  instrument_vol     = annualised rolling stddev of close-to-close returns
+                             over the last vol_lookback_bars bars.
+    3.  annual_dollar_risk = slot_equity * target_portfolio_vol
+    4.  contract_dollar_vol = instrument_vol * price * multiplier
+    5.  raw_contracts      = annual_dollar_risk / contract_dollar_vol
+    6.  contracts          = round(raw_contracts)
+    7.  contracts          = min(contracts, max_contracts_per_slot)
+    8.  signed_qty         = contracts * signal.direction
 
-Step 2 expresses sizing in dollars-of-risk per minimum price move (tick), not
-in full notional — consistent with prop-desk futures sizing practice.
+The key denominator is the annualised dollar volatility of one full contract:
+`annualised_vol * price * multiplier`. Tick size is relevant for execution and
+slippage simulation, but it is not the correct denominator for volatility-
+targeted contract sizing.
 """
 
 from __future__ import annotations
@@ -101,11 +104,11 @@ class Allocator:
 
             price     = current_prices.get(sig.symbol, 0.0)
             spec      = instrument_specs.get(sig.symbol, {"multiplier": 1.0, "tick_size": 0.01})
-            tick_size = spec.get("tick_size", 0.01)
+            multiplier = float(spec.get("multiplier", 1.0))
 
-            if price > 0 and tick_size > 0 and sig.direction != 0:
+            if price > 0 and multiplier > 0 and sig.direction != 0:
                 vol  = self._estimate_vol(sig.symbol, price_history, bars_per_year)
-                contracts = self._size_contracts(equity_per_ticker, price, tick_size, vol)
+                contracts = self._size_contracts(equity_per_ticker, price, multiplier, vol)
             else:
                 contracts = 0
 
@@ -161,34 +164,74 @@ class Allocator:
 
         return bar_vol * math.sqrt(bars_per_year)
 
+    def _compute_raw_contracts(
+        self,
+        equity: float,
+        price: float,
+        multiplier: float,
+        annualised_vol: float,
+    ) -> float:
+        """
+        Computes the continuous vol-target contract quantity before rounding.
+
+        Methodology:
+            `annualised_vol` is expected to already be annualized by
+            `_estimate_vol()`. The annualized dollar risk budget is
+            `equity * target_portfolio_vol`, and one contract contributes
+            `annualised_vol * price * multiplier` of annualized dollar
+            volatility. Rounding and hard caps are applied only after this raw
+            quantity is computed so the mathematical target remains testable.
+
+        Args:
+            equity: Dollars allocated to this (slot, ticker).
+            price: Current close price of the instrument.
+            multiplier: Contract multiplier used to convert price moves to dollars.
+            annualised_vol: Estimated annualized volatility (e.g. 0.15).
+
+        Returns:
+            Continuous contract quantity before integer conversion.
+        """
+        if equity <= 0.0 or price <= 0.0 or multiplier <= 0.0 or annualised_vol <= 0.0:
+            return 0.0
+
+        annual_dollar_risk = equity * self._config.target_portfolio_vol
+        contract_dollar_vol = annualised_vol * price * multiplier
+        if contract_dollar_vol <= 0.0:
+            return 0.0
+
+        return max(0.0, annual_dollar_risk / contract_dollar_vol)
+
     def _size_contracts(
         self,
         equity: float,
         price: float,
-        tick_size: float,
+        multiplier: float,
         annualised_vol: float,
     ) -> int:
         """
         Computes integer contract count using vol-targeting.
 
         Methodology:
-            vol_scalar  = target_portfolio_vol / annualised_vol
-            dollar_risk = equity * vol_scalar
-            contracts   = round(dollar_risk / (price * tick_size))
-            contracts   = clip to [0, max_contracts_per_slot]
+            First compute the continuous vol-target contract quantity from the
+            annualized risk budget and the annualized dollar volatility of one
+            contract. Integer rounding happens after the raw quantity is
+            computed, and the hard cap is applied last.
 
         Args:
             equity: Dollars allocated to this (slot, ticker).
             price: Current close price of the instrument.
-            tick_size: Dollar value per minimum price move.
-            annualised_vol: Estimated annualised volatility (e.g. 0.15).
+            multiplier: Contract multiplier used to convert price moves to dollars.
+            annualised_vol: Estimated annualized volatility (e.g. 0.15).
 
         Returns:
-            Integer contract count (>= 0), capped at max_contracts_per_slot.
+            Integer contract count (>= 0), rounded then capped at
+            max_contracts_per_slot.
         """
-        vol_scalar   = self._config.target_portfolio_vol / annualised_vol
-        dollar_risk  = equity * vol_scalar
-        tick_value   = price * tick_size        # dollars per tick
-        raw          = dollar_risk / tick_value
-        contracts    = max(0, round(raw))
+        raw_contracts = self._compute_raw_contracts(
+            equity=equity,
+            price=price,
+            multiplier=multiplier,
+            annualised_vol=annualised_vol,
+        )
+        contracts = max(0, round(raw_contracts))
         return min(contracts, self._config.max_contracts_per_slot)

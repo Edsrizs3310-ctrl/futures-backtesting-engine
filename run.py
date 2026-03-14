@@ -91,6 +91,11 @@ if __name__ == "__main__":
                             "opens AFTER the backtest completes. "
                             "Standalone: 'python run.py --dashboard'."
                         ))
+    parser.add_argument("--results-subdir", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--scenario-id", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--baseline-run-id", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--scenario-type", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--scenario-params-json", type=str, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if len(sys.argv) == 1:
@@ -131,6 +136,14 @@ if __name__ == "__main__":
     # ── Mode: portfolio backtest ───────────────────────────────────────────────
     if getattr(args, "portfolio_backtest", False):
         from cli.portfolio import run as run_portfolio
-        run_portfolio(args.portfolio_config, launch_dashboard=False)
+        run_portfolio(
+            args.portfolio_config,
+            launch_dashboard=False,
+            results_subdir=args.results_subdir,
+            scenario_id=args.scenario_id,
+            baseline_run_id=args.baseline_run_id,
+            scenario_type=args.scenario_type,
+            scenario_params_json=args.scenario_params_json,
+        )
         if args.dashboard:
             _launch_dashboard()

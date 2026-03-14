@@ -93,7 +93,7 @@ def build_var_es_figure(
     fig.add_trace(
         go.Scatter(
             x=frame.index,
-            y=frame["var_primary"],
+            y=-frame["var_primary"],
             mode="lines",
             name=f"VaR {int(primary_confidence * 100)}",
             line=dict(color=PALETTE["var_95"], width=1.8, dash="dash"),
@@ -102,7 +102,7 @@ def build_var_es_figure(
     fig.add_trace(
         go.Scatter(
             x=frame.index,
-            y=frame["es_primary"],
+            y=-frame["es_primary"],
             mode="lines",
             name=f"ES {int(primary_confidence * 100)}",
             line=dict(color=PALETTE["var_95"], width=1.3, dash="dot"),
@@ -111,7 +111,7 @@ def build_var_es_figure(
     fig.add_trace(
         go.Scatter(
             x=frame.index,
-            y=frame["var_tail"],
+            y=-frame["var_tail"],
             mode="lines",
             name=f"VaR {int(tail_confidence * 100)}",
             line=dict(color=PALETTE["var_99"], width=1.8, dash="dash"),
@@ -120,7 +120,7 @@ def build_var_es_figure(
     fig.add_trace(
         go.Scatter(
             x=frame.index,
-            y=frame["es_tail"],
+            y=-frame["es_tail"],
             mode="lines",
             name=f"ES {int(tail_confidence * 100)}",
             line=dict(color=PALETTE["var_99"], width=1.3, dash="dot"),
@@ -215,7 +215,7 @@ def build_risk_distribution_figure(
         if np.isnan(value):
             continue
         fig.add_vline(
-            x=value,
+            x=-value,
             line_dash=dash,
             line_color=color,
             line_width=1.7,
@@ -335,9 +335,9 @@ def build_rolling_volatility_figure(rolling_vol: pd.DataFrame, title: str) -> go
 
 
 def build_stress_test_figure(stress_results: List[StressScenarioResult], title: str) -> go.Figure:
-    """Builds a multi-scenario daily equity comparison for stress tests."""
+    """Builds a multi-scenario daily equity comparison for stress previews."""
     if not stress_results:
-        return _empty_figure("No stress scenarios", height=320)
+        return _empty_figure("No stress preview scenarios", height=320)
 
     color_map = {
         "baseline": PALETTE["combined"],
@@ -363,6 +363,53 @@ def build_stress_test_figure(stress_results: List[StressScenarioResult], title: 
             )
         )
 
+    fig.update_layout(
+        title=dict(text=title, font_size=12, x=0),
+        xaxis_title="Date",
+        yaxis=dict(tickprefix="$", tickformat=",.0f"),
+        margin=dict(l=0, r=0, t=30, b=80),
+        height=320,
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font_color=PALETTE["text"],
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="top", y=-0.3, x=0),
+    )
+    return fig
+
+
+def build_scenario_comparison_figure(
+    baseline_equity: pd.Series,
+    scenario_equity: pd.Series,
+    title: str,
+) -> go.Figure:
+    """Builds a baseline-vs-scenario equity comparison for real rerun artifacts."""
+    if baseline_equity is None or baseline_equity.dropna().empty:
+        return _empty_figure("No baseline equity data", height=320)
+    if scenario_equity is None or scenario_equity.dropna().empty:
+        return _empty_figure("No scenario equity data", height=320)
+
+    baseline = baseline_equity.dropna().astype(float)
+    scenario = scenario_equity.dropna().astype(float)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=baseline.index,
+            y=baseline,
+            mode="lines",
+            name="Baseline",
+            line=dict(color=PALETTE["combined"], width=2.5),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=scenario.index,
+            y=scenario,
+            mode="lines",
+            name="Scenario",
+            line=dict(color=PALETTE["var_99"], width=2.0, dash="dash"),
+        )
+    )
     fig.update_layout(
         title=dict(text=title, font_size=12, x=0),
         xaxis_title="Date",

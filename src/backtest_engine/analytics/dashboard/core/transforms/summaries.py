@@ -2,12 +2,21 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-from .pnl import build_bar_pnl_matrix
+import scipy.stats as stats
+from .pnl import (
+    build_bar_pnl_matrix,
+    build_strategy_equity_curve,
+    resample_pnl_to_horizon,
+    _HORIZON_RULE,
+    compute_pnl_dist_stats as _compute_pnl_dist_stats,
+)
+from .correlations import _MIN_CORR_SAMPLES
 
 def compute_strategy_decomp(
     trades_df: pd.DataFrame,
     history: pd.DataFrame,
     slots: Dict[str, str],
+    tail_confidence: float = 0.95,
 ) -> pd.DataFrame:
     """
     Builds the Strategy PnL Decomposition table.
@@ -34,8 +43,8 @@ def compute_strategy_decomp(
         strategy contributed to the portfolio's worst period.
 
     Tail PnL (CVaR) ($)
-        Average daily PnL of the strategy on the worst 5% of portfolio
-        daily PnL days. (Marginal CVaR).
+        Average daily PnL of the strategy on the portfolio tail days implied by
+        `tail_confidence`. This is a marginal CVaR-style measure.
 
     Signal PnL ($)
         sum(closed pnl + commission + slippage) = PnL before execution friction.
@@ -44,14 +53,16 @@ def compute_strategy_decomp(
     Execution Cost ($)
         sum(-(commission + slippage))  (negative = we paid fees/slippage)
 
-    Sharpe
-        Annualised Sharpe computed from the strategy's *daily* PnL series
-        derived from bar history. Uses sqrt(252).
+    Daily PnL Sharpe-like
+        Annualised mean/std signal-to-noise ratio computed from the strategy's
+        daily dollar PnL series. This is scale-dependent and is intentionally
+        not labeled as a return-based Sharpe ratio.
 
     Args:
         trades_df: Trades DataFrame with strategy, pnl, commission columns.
         history: Portfolio history used for bar-level risk computation.
         slots: {slot_id: strategy_name} — maps history columns to names.
+        tail_confidence: Confidence level used to define the lower-tail mask.
 
     Returns:
         DataFrame with one row per strategy, ready for rendering.
@@ -104,9 +115,9 @@ def compute_strategy_decomp(
     else:
         dd_mask = pd.Series(False, index=portfolio_bar_pnl.index)
 
-    # Tail mask: worst 5% of daily portfolio PnL
+    # Tail mask parameterized from the requested confidence level.
     if len(daily_portfolio) >= 20:
-        var_threshold = float(daily_portfolio.quantile(0.05))
+        var_threshold = float(daily_portfolio.quantile(1.0 - float(tail_confidence)))
         tail_dates    = daily_portfolio[daily_portfolio <= var_threshold].index
     else:
         tail_dates = daily_portfolio.index[:0]  # empty
@@ -151,7 +162,7 @@ def compute_strategy_decomp(
         else:
             tail_pnl = float("nan")
 
-        # Per-strategy Sharpe (computed on 1D resampled PnL without bars_per_day)
+        # Scale-dependent daily PnL signal-to-noise ratio.
         daily_strat_pnl = bar_pnl[name].resample("1D").sum()
         roll_std = float(daily_strat_pnl.std())
         roll_mean = float(daily_strat_pnl.mean())
@@ -159,7 +170,7 @@ def compute_strategy_decomp(
 
         rows.append({
             "Strategy":             name,
-            "Sharpe":               round(sharpe_val, 2) if not np.isnan(sharpe_val) else float("nan"),
+            "Daily PnL Sharpe-like": round(sharpe_val, 2) if not np.isnan(sharpe_val) else float("nan"),
             "Closed PnL ($)":       round(closed_pnl_val, 0),
             "PnL Contrib (%)":      round(pnl_contrib, 1) if not np.isnan(pnl_contrib) else float("nan"),
             "Risk Contrib (%)":     round(risk_contrib, 1) if not np.isnan(risk_contrib) else float("nan"),
@@ -352,47 +363,8 @@ def compute_pnl_dist_stats(
     daily_pnl: pd.Series,
     var_confidence: float = 0.95,
 ) -> Dict[str, float]:
-    """
-    Computes distribution statistics for the daily PnL series.
-
-    Methodology:
-        skew     — Fisher skewness (positive = right tail, preferred for long).
-        kurtosis — Excess kurtosis (Fisher). > 0 = fat tails vs normal.
-        VaR      — Historical percentile (non-parametric).
-        CVaR     — Conditional VaR (Expected Shortfall):
-                   mean of losses beyond the VaR threshold.
-
-    Args:
-        daily_pnl: Daily net PnL series (not cumulative).
-        var_confidence: Confidence level for VaR (default 0.95).
-
-    Returns:
-        Dict with keys: skew, kurtosis, var_95, cvar_95, var_99, mean, std.
-    """
-    if daily_pnl is None or daily_pnl.dropna().empty:
-        return {
-            "skew": float("nan"), "kurtosis": float("nan"),
-            "var_95": float("nan"), "cvar_95": float("nan"),
-            "var_99": float("nan"), "mean": float("nan"), "std": float("nan"),
-        }
-
-    clean: pd.Series = daily_pnl.dropna()
-    skew_val: float  = float(stats.skew(clean))
-    kurt_val: float  = float(stats.kurtosis(clean))  # excess (Fisher)
-
-    var_95:  float = float(clean.quantile(1 - var_confidence))   # 5th pct
-    var_99:  float = float(clean.quantile(0.01))                  # 1st pct
-    cvar_95: float = float(clean[clean <= var_95].mean())
-
-    return {
-        "skew":     round(skew_val, 4),
-        "kurtosis": round(kurt_val, 4),
-        "var_95":   round(var_95, 2),
-        "cvar_95":  round(cvar_95, 2),
-        "var_99":   round(var_99, 2),
-        "mean":     round(float(clean.mean()), 2),
-        "std":      round(float(clean.std()), 2),
-    }
+    """Backward-compatible wrapper around the shared PnL distribution helper."""
+    return _compute_pnl_dist_stats(daily_pnl, var_confidence=var_confidence)
 
 
 # ── Per-strategy summary for equity hover tooltip ──────────────────────────────
@@ -426,9 +398,6 @@ def compute_per_strategy_summary(
     Returns:
         Dict {strategy_name: {metric_name: value}}.
     """
-    import scipy.stats as stats
-    import numpy as np
-
     result: Dict[str, Dict[str, object]] = {}
 
     if trades_df is None or trades_df.empty or "strategy" not in trades_df.columns:
@@ -485,50 +454,61 @@ def compute_per_strategy_summary(
             if symbols:
                 target_sym = symbols[0]
                 strat_pnl_col = f"slot_{str_id}_pnl"
-                
-                if strat_pnl_col in history.columns and target_sym in instrument_closes.columns:
-                    # Strategy returns must come from the slot equity curve,
-                    # not from raw daily PnL divided by initial capital.
-                    strat_weight = 1.0
-                    if slot_weights and str_id in slot_weights:
-                        strat_weight = float(slot_weights[str_id])
 
-                    strat_initial_cap = initial_cap * strat_weight
-                    strat_equity = (history[strat_pnl_col] + strat_initial_cap).resample("1D").last().dropna()
-                    strat_rets = strat_equity.pct_change(fill_method=None).dropna()
-                    
+                if strat_pnl_col in history.columns and target_sym in instrument_closes.columns:
+                    slot_weight = None
+                    if slot_weights and str_id in slot_weights:
+                        slot_weight = float(slot_weights[str_id])
+
+                    strategy_equity = build_strategy_equity_curve(
+                        history=history,
+                        slot_id=str(str_id),
+                        slot_weight=slot_weight,
+                        slot_count=len(slots),
+                    )
+                    strat_rets = (
+                        strategy_equity
+                        .resample("1D")
+                        .last()
+                        .dropna()
+                        .pct_change(fill_method=None)
+                        .dropna()
+                    )
+
                     # Instrument Returns
                     inst_close = instrument_closes[target_sym].resample("1D").last()
-                    inst_rets = inst_close.pct_change(fill_method=None).fillna(0.0)
+                    inst_rets  = inst_close.pct_change(fill_method=None).fillna(0.0)
 
-                    # Align timestamps
+                    # Align timestamps and drop any remaining NaNs
                     aligned = pd.concat([strat_rets, inst_rets], axis=1, join="inner").dropna()
-                    
+
                     if len(aligned) > 2:
                         y = aligned.iloc[:, 0].values
                         x = aligned.iloc[:, 1].values
-                        
+
                         slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-                        
-                        stats_dict["beta"] = float(slope)
+
+                        stats_dict["beta"]   = float(slope)
                         stats_dict["beta_p"] = float(p_value)
 
-                        # Alpha (annualized roughly via * 252)
+                        # Annualised alpha: intercept is daily excess return on portfolio
+                        # capital, so × 252 gives annual, × 100 converts to percentage.
                         ann_alpha = intercept * 252
-                        stats_dict["alpha"] = float(ann_alpha * 100) # Percentage
+                        stats_dict["alpha"] = float(ann_alpha * 100)
 
-                        # Alpha significance is the intercept t-test from the
-                        # same simple linear regression.
-                        n = len(x)
+                        # Alpha p-value from the intercept t-test of the same regression
+                        n      = len(x)
                         mean_x = np.mean(x)
-                        ss_x = np.sum((x - mean_x) ** 2)
-                        
+                        ss_x   = np.sum((x - mean_x) ** 2)
+
                         if ss_x > 0 and n > 2:
-                            residuals = y - (intercept + slope * x)
+                            residuals    = y - (intercept + slope * x)
                             residual_var = np.sum(residuals ** 2) / (n - 2)
-                            se_intercept = np.sqrt(residual_var * ((1.0 / n) + (mean_x ** 2 / ss_x)))
+                            se_intercept = np.sqrt(
+                                residual_var * ((1.0 / n) + (mean_x ** 2 / ss_x))
+                            )
                             if np.isfinite(se_intercept) and se_intercept > 0:
-                                t_alpha = intercept / se_intercept
+                                t_alpha   = intercept / se_intercept
                                 alpha_pval = stats.t.sf(np.abs(t_alpha), n - 2) * 2
                                 stats_dict["alpha_p"] = float(alpha_pval)
 

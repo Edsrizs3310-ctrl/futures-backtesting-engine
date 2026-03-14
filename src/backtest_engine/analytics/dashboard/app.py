@@ -100,9 +100,19 @@ def _cached_compute_exit_summary(trades: pd.DataFrame, slots: dict) -> pd.DataFr
     return compute_exit_summary(trades, slots)
 
 @st.cache_data(show_spinner=False)
-def _cached_compute_strategy_decomp(trades_df: pd.DataFrame, history: pd.DataFrame, slots: dict) -> pd.DataFrame:
+def _cached_compute_strategy_decomp(
+    trades_df: pd.DataFrame,
+    history: pd.DataFrame,
+    slots: dict,
+    tail_confidence: float,
+) -> pd.DataFrame:
     """Cache strategy decomposition computation."""
-    return compute_strategy_decomp(trades_df=trades_df, history=history, slots=slots)
+    return compute_strategy_decomp(
+        trades_df=trades_df,
+        history=history,
+        slots=slots,
+        tail_confidence=tail_confidence,
+    )
 
 @st.cache_data(show_spinner=False)
 def _cached_compute_strategy_correlation(bar_pnl_matrix: pd.DataFrame, horizon: str) -> pd.DataFrame:
@@ -115,13 +125,14 @@ def _cached_compute_exposure_correlation(exposure: pd.DataFrame, horizon: str) -
     return compute_exposure_correlation(exposure, horizon=horizon)
 
 
-def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
+def _render_pnl_tab(bundle: ResultBundle, window_days: int, tail_confidence: float) -> None:
     """
     Renders the complete PnL Analysis tab for both modes.
 
     Args:
         bundle: Fully loaded ResultBundle from data_layer.
         window_days: Rolling Sharpe window from settings.
+        tail_confidence: Confidence used for tail-day decomposition metrics.
     """
     is_portfolio: bool = bundle.run_type == "portfolio"
 
@@ -160,10 +171,10 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
                 trades=bundle.trades,
                 benchmark=bundle.benchmark,
             )
-        st.plotly_chart(fig_eq, use_container_width=True)
+        st.plotly_chart(fig_eq, width="stretch")
 
         fig_dd = build_drawdown_figure(bundle.history)
-        st.plotly_chart(fig_dd, use_container_width=True)
+        st.plotly_chart(fig_dd, width="stretch")
 
     with col_log:
         st.code(bundle.report or "No report available.", language="")
@@ -172,7 +183,7 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
 
     # ── Row 3: Exit Analysis Summary (Screener Table) ──────────────────────────
     st.markdown("#### Exit Analysis Summary")
-    st.caption("Select a strategy row below to open detailed interactive exit charts (MFE/MAE, Decay, etc).")
+    st.caption("Select a strategy row to open detailed exit charts.")
 
     st_summ = pd.DataFrame()
     if is_portfolio and bundle.slots:
@@ -186,14 +197,14 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
             selection_mode="single-row",
             on_select="rerun"
         )
-        if event.selection.rows:
+        if event and event.selection and event.selection.rows:
             selected_idx = event.selection.rows[0]
             strat_name = st_summ.iloc[selected_idx]["Strategy"]
             if is_portfolio:
                 strat_trades = bundle.trades[bundle.trades["strategy"] == strat_name] if not bundle.trades.empty else pd.DataFrame()
             else:
                 strat_trades = bundle.trades
-            
+
             _show_exit_analysis_dialog(strat_name, strat_trades)
     else:
         st.info("No detailed exit data available.")
@@ -206,7 +217,7 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
     
     col_l, col_m, col_r = st.columns([1, 2, 1])
     with col_m:
-        st.plotly_chart(fig_dist, use_container_width=True)
+        st.plotly_chart(fig_dist, width="stretch")
 
     if not is_portfolio:
         return
@@ -219,12 +230,13 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
         trades_df=bundle.trades,
         history=bundle.history,
         slots=bundle.slots or {},
+        tail_confidence=tail_confidence,
     )
     render_decomp_table(decomp_df)
 
     # ── Row 5: Decomposition bar chart (full width, below table) ──────────────
     fig_decomp = build_decomp_chart(decomp_df)
-    st.plotly_chart(fig_decomp, use_container_width=True)
+    st.plotly_chart(fig_decomp, width="stretch")
 
     st.divider()
 
@@ -250,7 +262,7 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
             strat_corr_matrix,
             title=f"Strategy PnL Correlation ({horizon})",
         )
-        st.plotly_chart(fig_strat_corr, use_container_width=True)
+        st.plotly_chart(fig_strat_corr, width="stretch")
 
     with col_exp_corr:
         st.markdown("**Exposure Correlation (by Instrument)**")
@@ -275,7 +287,7 @@ def _render_pnl_tab(bundle: ResultBundle, window_days: int) -> None:
                     exp_corr_matrix,
                     title=f"Exposure Correlation ({horizon})",
                 )
-                st.plotly_chart(fig_exp_corr, use_container_width=True)
+                st.plotly_chart(fig_exp_corr, width="stretch")
                 
                 if dropped_inst:
                     st.info(f"Insufficient data for instrument(s): {', '.join(dropped_inst)}", icon="ℹ️")
@@ -288,13 +300,22 @@ def main() -> None:
     """
     Streamlit page entry point.
 
-    Pure read-only viewer — the engine does NOT run inside Streamlit.
-    Run the backtest separately first, then open the dashboard.
+    Primarily a baseline artifact viewer.
+
+    Methodology:
+        The dashboard reads existing artifacts for baseline analysis. The Risk
+        Analysis tab may also launch explicit child portfolio scenario reruns on
+        button press, but passive widget changes never trigger engine work.
     """
     st.set_page_config(
         page_title="Backtest Dashboard",
         layout="wide",
         initial_sidebar_state="expanded",
+        menu_items={
+            "Get help": None,
+            "Report a bug": None,
+            "About": None,
+        },
     )
     st.markdown(
         """
@@ -320,31 +341,37 @@ def main() -> None:
     )
 
     # ── Settings (read-only, no engine import paths needed in Streamlit) ───────
+    settings_warning: str | None = None
     try:
         from src.backtest_engine.settings import BacktestSettings
         _settings = BacktestSettings()
-        window_days: int  = _settings.rolling_sharpe_window_days
+        dashboard_settings = _settings.dashboard
+        window_days: int  = int(dashboard_settings.rolling_sharpe_window_days)
         risk_free_rate: float = float(_settings.risk_free_rate)
         instrument_specs: dict = _settings.instrument_specs
         risk_config = RiskDashboardConfig(
-            var_confidence_primary=float(_settings.dashboard_risk_var_primary_confidence),
-            var_confidence_tail=float(_settings.dashboard_risk_var_tail_confidence),
-            rolling_var_window_days=int(_settings.dashboard_risk_rolling_var_window_days),
+            var_confidence_primary=float(dashboard_settings.dashboard_risk_var_primary_confidence),
+            var_confidence_tail=float(dashboard_settings.dashboard_risk_var_tail_confidence),
+            rolling_var_window_days=int(dashboard_settings.dashboard_risk_rolling_var_window_days),
             rolling_vol_windows=(
-                int(_settings.dashboard_risk_rolling_vol_window_short_days),
-                int(_settings.dashboard_risk_rolling_vol_window_medium_days),
-                int(_settings.dashboard_risk_rolling_vol_window_long_days),
+                int(dashboard_settings.dashboard_risk_rolling_vol_window_short_days),
+                int(dashboard_settings.dashboard_risk_rolling_vol_window_medium_days),
+                int(dashboard_settings.dashboard_risk_rolling_vol_window_long_days),
             ),
-            stress_slider_min=float(_settings.dashboard_stress_slider_min_multiplier),
-            stress_slider_max=float(_settings.dashboard_stress_slider_max_multiplier),
-            stress_slider_step=float(_settings.dashboard_stress_slider_step),
+            stress_slider_min=float(dashboard_settings.dashboard_stress_slider_min_multiplier),
+            stress_slider_max=float(dashboard_settings.dashboard_stress_slider_max_multiplier),
+            stress_slider_step=float(dashboard_settings.dashboard_stress_slider_step),
             stress_defaults=StressMultipliers(
-                volatility=float(_settings.dashboard_stress_volatility_default_multiplier),
-                slippage=float(_settings.dashboard_stress_slippage_default_multiplier),
-                commission=float(_settings.dashboard_stress_commission_default_multiplier),
+                volatility=float(dashboard_settings.dashboard_stress_volatility_default_multiplier),
+                slippage=float(dashboard_settings.dashboard_stress_slippage_default_multiplier),
+                commission=float(dashboard_settings.dashboard_stress_commission_default_multiplier),
             ),
         )
-    except Exception:
+    except Exception as exc:
+        settings_warning = (
+            "Dashboard settings could not be loaded from `BacktestSettings.dashboard`; "
+            f"falling back to safe defaults. Details: {exc}"
+        )
         window_days = 90   # safe default
         risk_free_rate = 0.0
         instrument_specs = {}
@@ -362,6 +389,13 @@ def main() -> None:
                 commission=2.0,
             ),
         )
+
+    if settings_warning:
+        st.warning(settings_warning)
+
+    with st.sidebar:
+        if st.button("Refresh Artifacts", key="refresh_artifacts_button"):
+            load_result_bundle.clear()
 
     # ── Load results ───────────────────────────────────────────────────────────
     bundle = load_result_bundle()
@@ -384,7 +418,11 @@ def main() -> None:
     tab_pnl, tab_risk, tab_sim = st.tabs(["PnL Analysis", "Risk Analysis", "Simulation Analysis"])
 
     with tab_pnl:
-        _render_pnl_tab(bundle, window_days=window_days)
+        _render_pnl_tab(
+            bundle,
+            window_days=window_days,
+            tail_confidence=risk_config.var_confidence_primary,
+        )
 
     with tab_risk:
         render_risk_tab(
@@ -406,17 +444,17 @@ def _show_exit_analysis_dialog(title: str, trades: pd.DataFrame):
         
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(build_mfe_mae_scatter(trades), use_container_width=True)
+        st.plotly_chart(build_mfe_mae_scatter(trades), width="stretch")
     with c2:
-        st.plotly_chart(build_pnl_decay_chart(trades), use_container_width=True)
+        st.plotly_chart(build_pnl_decay_chart(trades), width="stretch")
         
     c3, c4 = st.columns(2)
     with c3:
-        st.plotly_chart(build_holding_time_chart(trades), use_container_width=True)
+        st.plotly_chart(build_holding_time_chart(trades), width="stretch")
     with c4:
-        st.plotly_chart(build_vol_regime_chart(trades), use_container_width=True)
+        st.plotly_chart(build_vol_regime_chart(trades), width="stretch")
         
-    st.plotly_chart(build_exit_reason_chart(trades), use_container_width=True)
+    st.plotly_chart(build_exit_reason_chart(trades), width="stretch")
 
 
 

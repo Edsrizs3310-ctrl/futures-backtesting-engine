@@ -9,12 +9,18 @@ from typing import Dict
 import pandas as pd
 import streamlit as st
 
-from src.backtest_engine.analytics.dashboard.core.data_layer import ResultBundle
+from src.backtest_engine.analytics.dashboard.core.data_layer import ResultBundle, load_result_bundle
+from src.backtest_engine.analytics.dashboard.core.scenario_runner import (
+    list_portfolio_scenarios,
+    run_portfolio_scenario,
+    scenario_matches_baseline,
+)
 from src.backtest_engine.analytics.dashboard.core.transforms import (
     build_risk_profile,
     build_strategy_equity_curve,
 )
 from src.backtest_engine.analytics.dashboard.risk_analysis.charts import (
+    build_scenario_comparison_figure,
     build_drawdown_curve_figure,
     build_drawdown_distribution_figure,
     build_equity_curve_figure,
@@ -52,12 +58,63 @@ def _fmt_days(value: float) -> str:
     return f"{value:.1f}d"
 
 
+def _render_formatted_table(
+    frame: pd.DataFrame,
+    *,
+    currency_cols: tuple[str, ...] = (),
+    pct_cols: tuple[str, ...] = (),
+    float_cols: tuple[str, ...] = (),
+) -> None:
+    """Renders a dataframe while keeping numeric columns sortable underneath."""
+    format_map: Dict[str, object] = {}
+    for col in currency_cols:
+        if col in frame.columns:
+            format_map[col] = _fmt_currency
+    for col in pct_cols:
+        if col in frame.columns:
+            format_map[col] = _fmt_pct
+    for col in float_cols:
+        if col in frame.columns:
+            format_map[col] = "{:.2f}"
+
+    styled = frame.style.format(format_map, na_rep="N/A") if format_map else frame
+    st.dataframe(styled, hide_index=True, width="stretch")
+
+
+def _render_metric_comparison_table(rows: list[dict]) -> None:
+    """Renders baseline/scenario comparison rows while preserving numeric sorting."""
+    table = pd.DataFrame(rows)
+    if table.empty:
+        st.info("No scenario comparison metrics available.")
+        return
+
+    value_columns = ["Baseline", "Scenario", "Delta"]
+    metric_type = table.pop("_metric_type")
+    styled = table.style.format(na_rep="N/A")
+
+    currency_rows = table.index[metric_type == "currency"]
+    pct_rows = table.index[metric_type == "pct"]
+    float_rows = table.index[metric_type == "float"]
+
+    if len(currency_rows) > 0:
+        styled = styled.format(_fmt_currency, subset=pd.IndexSlice[currency_rows, value_columns])
+    if len(pct_rows) > 0:
+        styled = styled.format(_fmt_pct, subset=pd.IndexSlice[pct_rows, value_columns])
+    if len(float_rows) > 0:
+        styled = styled.format("{:.2f}", subset=pd.IndexSlice[float_rows, value_columns])
+
+    st.dataframe(styled, hide_index=True, width="stretch")
+
+
 def _render_stress_controls(key_prefix: str, config: RiskDashboardConfig) -> StressMultipliers:
     """Renders stress-test sliders and returns the selected multipliers."""
-    st.markdown("##### Stress Tests")
+    st.markdown("##### Stress Preview")
     st.caption(
-        "Volatility shock scales demeaned daily PnL dispersion. "
-        "Slippage and commission shocks add only incremental trading costs above the realised baseline."
+        "This is a fast post-processing preview, not a backtest rerun. "
+        "It transforms the realized daily PnL path and derived equity curve only. "
+        "It does not change signals, trades, fills, stops, sizing, or allocation decisions. "
+        "Volatility preview rescales realized daily PnL dispersion, while slippage and commission preview "
+        "adjust total realized trading costs relative to baseline."
     )
     col_container, _ = st.columns([2, 1])
     with col_container:
@@ -97,6 +154,24 @@ def _render_stress_controls(key_prefix: str, config: RiskDashboardConfig) -> Str
     )
 
 
+def _get_stress_state(key_prefix: str, config: RiskDashboardConfig) -> StressMultipliers:
+    """
+    Returns the current stress state from Streamlit session state.
+
+    Methodology:
+        Risk tables and drilldowns must agree on the same live preview inputs
+        during a rerun. Reading the widget-backed session state before the
+        controls are rendered keeps upstream profile construction aligned with
+        the currently selected slider values instead of silently falling back to
+        config defaults.
+    """
+    return StressMultipliers(
+        volatility=float(st.session_state.get(f"{key_prefix}_stress_volatility", config.stress_defaults.volatility)),
+        slippage=float(st.session_state.get(f"{key_prefix}_stress_slippage", config.stress_defaults.slippage)),
+        commission=float(st.session_state.get(f"{key_prefix}_stress_commission", config.stress_defaults.commission)),
+    )
+
+
 def _render_summary_cards(profile: RiskProfile, config: RiskDashboardConfig) -> None:
     """Renders top-level scalar risk metrics."""
     summary = profile.summary
@@ -104,10 +179,10 @@ def _render_summary_cards(profile: RiskProfile, config: RiskDashboardConfig) -> 
     conf_tail = int(config.var_confidence_tail * 100)
 
     row_1 = st.columns(4)
-    row_1[0].metric(f"VaR {conf_primary}", _fmt_currency(summary.get("var_primary", float("nan"))))
-    row_1[1].metric(f"VaR {conf_tail}", _fmt_currency(summary.get("var_tail", float("nan"))))
-    row_1[2].metric(f"ES {conf_primary}", _fmt_currency(summary.get("es_primary", float("nan"))))
-    row_1[3].metric(f"ES {conf_tail}", _fmt_currency(summary.get("es_tail", float("nan"))))
+    row_1[0].metric(f"VaR {conf_primary} Loss", _fmt_currency(summary.get("var_primary", float("nan"))))
+    row_1[1].metric(f"VaR {conf_tail} Loss", _fmt_currency(summary.get("var_tail", float("nan"))))
+    row_1[2].metric(f"ES {conf_primary} Loss", _fmt_currency(summary.get("es_primary", float("nan"))))
+    row_1[3].metric(f"ES {conf_tail} Loss", _fmt_currency(summary.get("es_tail", float("nan"))))
 
     row_2 = st.columns(4)
     row_2[0].metric("Max DD", _fmt_pct(summary.get("max_drawdown_pct", float("nan"))))
@@ -119,7 +194,7 @@ def _render_summary_cards(profile: RiskProfile, config: RiskDashboardConfig) -> 
 def _render_stress_table(profile: RiskProfile, config: RiskDashboardConfig) -> None:
     """Renders the stress-test summary table."""
     if not profile.stress_results:
-        st.info("No stress scenarios available.")
+        st.info("No stress preview scenarios available.")
         return
 
     primary_label = int(config.var_confidence_primary * 100)
@@ -128,24 +203,26 @@ def _render_stress_table(profile: RiskProfile, config: RiskDashboardConfig) -> N
         rows.append(
             {
                 "Scenario": scenario.label,
-                "Final PnL": _fmt_currency(scenario.metrics.get("final_pnl", float("nan"))),
-                "Delta vs Base": _fmt_currency(scenario.pnl_delta),
-                f"VaR {primary_label}": _fmt_currency(scenario.metrics.get("var_primary", float("nan"))),
-                f"ES {primary_label}": _fmt_currency(scenario.metrics.get("es_primary", float("nan"))),
-                "Max DD": _fmt_pct(scenario.metrics.get("max_drawdown_pct", float("nan"))),
-                "Sharpe": (
-                    f"{scenario.metrics['sharpe']:.2f}"
-                    if not pd.isna(scenario.metrics.get("sharpe", float("nan")))
-                    else "N/A"
-                ),
+                "Final PnL": float(scenario.metrics.get("final_pnl", float("nan"))),
+                "Delta vs Baseline": float(scenario.pnl_delta),
+                f"VaR {primary_label} Loss": float(scenario.metrics.get("var_primary", float("nan"))),
+                f"ES {primary_label} Loss": float(scenario.metrics.get("es_primary", float("nan"))),
+                "Max DD": float(scenario.metrics.get("max_drawdown_pct", float("nan"))),
+                "Sharpe": float(scenario.metrics.get("sharpe", float("nan"))),
             }
         )
 
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    table = pd.DataFrame(rows)
+    _render_formatted_table(
+        table,
+        currency_cols=("Final PnL", "Delta vs Baseline", f"VaR {primary_label} Loss", f"ES {primary_label} Loss"),
+        pct_cols=("Max DD",),
+        float_cols=("Sharpe",),
+    )
 
 
 def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig) -> None:
-    """Renders charts and summary blocks except stress tests."""
+    """Renders charts and summary blocks except stress-preview outputs."""
     _render_summary_cards(profile, config)
 
     st.markdown("##### Tail Risk")
@@ -158,7 +235,7 @@ def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig)
                 tail_confidence=config.var_confidence_tail,
                 title="Rolling Historical VaR / ES",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     with col_dist:
         st.plotly_chart(
@@ -169,7 +246,7 @@ def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig)
                 tail_confidence=config.var_confidence_tail,
                 title="Daily PnL Tail Distribution",
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown("##### Drawdown Analysis")
@@ -177,12 +254,12 @@ def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig)
     with col_eq:
         st.plotly_chart(
             build_equity_curve_figure(profile.equity, title="Equity Curve"),
-            use_container_width=True,
+            width="stretch",
         )
     with col_dd:
         st.plotly_chart(
             build_drawdown_curve_figure(profile.drawdown, title="Drawdown Curve"),
-            use_container_width=True,
+            width="stretch",
         )
 
     col_dd_dist, col_vol = st.columns(2)
@@ -192,7 +269,7 @@ def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig)
                 profile.drawdown_episodes,
                 title="Drawdown Distribution",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     with col_vol:
         st.plotly_chart(
@@ -200,17 +277,192 @@ def _render_risk_profile_core(profile: RiskProfile, config: RiskDashboardConfig)
                 profile.rolling_vol,
                 title="Rolling Volatility (Annualized Returns)",
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
 
 def _render_stress_analysis(profile: RiskProfile, config: RiskDashboardConfig) -> None:
-    """Renders the stress test charts and table."""
+    """Renders the stress-preview charts and table."""
     st.plotly_chart(
-        build_stress_test_figure(profile.stress_results, title="Stressed Equity Paths"),
-        use_container_width=True,
+        build_stress_test_figure(profile.stress_results, title="Stress Preview Equity Paths"),
+        width="stretch",
     )
     _render_stress_table(profile, config)
+
+
+def _build_portfolio_profile_from_bundle(
+    bundle: ResultBundle,
+    config: RiskDashboardConfig,
+    instrument_specs: Dict[str, Dict[str, float]],
+    risk_free_rate: float,
+    label: str,
+) -> RiskProfile:
+    """Builds a realized portfolio risk profile from an artifact bundle."""
+    return build_risk_profile(
+        label=label,
+        equity=bundle.history["total_value"],
+        trades_df=bundle.trades,
+        instrument_specs=instrument_specs,
+        primary_confidence=config.var_confidence_primary,
+        tail_confidence=config.var_confidence_tail,
+        rolling_var_window_days=config.rolling_var_window_days,
+        rolling_vol_windows=config.rolling_vol_windows,
+        stress_multipliers=StressMultipliers(volatility=1.0, slippage=1.0, commission=1.0),
+        risk_free_rate=risk_free_rate,
+    )
+
+
+def _render_scenario_comparison_table(
+    baseline_profile: RiskProfile,
+    scenario_profile: RiskProfile,
+    config: RiskDashboardConfig,
+) -> None:
+    """Renders a baseline-vs-scenario metric comparison table."""
+    primary_label = int(config.var_confidence_primary * 100)
+    rows = [
+        {
+            "Metric": "Final PnL",
+            "Baseline": float(baseline_profile.summary.get("total_pnl", float("nan"))),
+            "Scenario": float(scenario_profile.summary.get("total_pnl", float("nan"))),
+            "Delta": float(scenario_profile.summary.get("total_pnl", float("nan")))
+            - float(baseline_profile.summary.get("total_pnl", float("nan"))),
+            "_metric_type": "currency",
+        },
+        {
+            "Metric": "End Equity",
+            "Baseline": float(baseline_profile.equity.iloc[-1]) if not baseline_profile.equity.empty else float("nan"),
+            "Scenario": float(scenario_profile.equity.iloc[-1]) if not scenario_profile.equity.empty else float("nan"),
+            "Delta": (float(scenario_profile.equity.iloc[-1]) if not scenario_profile.equity.empty else float("nan"))
+            - (float(baseline_profile.equity.iloc[-1]) if not baseline_profile.equity.empty else float("nan")),
+            "_metric_type": "currency",
+        },
+        {
+            "Metric": f"VaR {primary_label} Loss",
+            "Baseline": float(baseline_profile.summary.get("var_primary", float("nan"))),
+            "Scenario": float(scenario_profile.summary.get("var_primary", float("nan"))),
+            "Delta": float(scenario_profile.summary.get("var_primary", float("nan")))
+            - float(baseline_profile.summary.get("var_primary", float("nan"))),
+            "_metric_type": "currency",
+        },
+        {
+            "Metric": f"ES {primary_label} Loss",
+            "Baseline": float(baseline_profile.summary.get("es_primary", float("nan"))),
+            "Scenario": float(scenario_profile.summary.get("es_primary", float("nan"))),
+            "Delta": float(scenario_profile.summary.get("es_primary", float("nan")))
+            - float(baseline_profile.summary.get("es_primary", float("nan"))),
+            "_metric_type": "currency",
+        },
+        {
+            "Metric": "Max DD",
+            "Baseline": float(baseline_profile.summary.get("max_drawdown_pct", float("nan"))),
+            "Scenario": float(scenario_profile.summary.get("max_drawdown_pct", float("nan"))),
+            "Delta": float(scenario_profile.summary.get("max_drawdown_pct", float("nan")))
+            - float(baseline_profile.summary.get("max_drawdown_pct", float("nan"))),
+            "_metric_type": "pct",
+        },
+        {
+            "Metric": "Sharpe",
+            "Baseline": float(baseline_profile.summary.get("sharpe", float("nan"))),
+            "Scenario": float(scenario_profile.summary.get("sharpe", float("nan"))),
+            "Delta": float(scenario_profile.summary.get("sharpe", float("nan")))
+            - float(baseline_profile.summary.get("sharpe", float("nan"))),
+            "_metric_type": "float",
+        },
+    ]
+    _render_metric_comparison_table(rows)
+
+
+def _render_scenario_backtest_section(
+    bundle: ResultBundle,
+    config: RiskDashboardConfig,
+    instrument_specs: Dict[str, Dict[str, float]],
+    risk_free_rate: float,
+    stress_multipliers: StressMultipliers,
+) -> None:
+    """Renders explicit engine-rerun workflow and comparison for portfolio mode."""
+    st.divider()
+    st.markdown("#### Scenario Backtest")
+    st.caption(
+        "Runs a real child portfolio backtest only on button press. "
+        "Scenario artifacts are written under `results/scenarios/<scenario_id>/` and do not overwrite the baseline. "
+        "Current rerun interpretation: volatility scales YAML `target_portfolio_vol`, "
+        "commission scales `commission_rate`, and slippage scales `max_slippage_ticks`."
+    )
+
+    if st.button("Run Scenario Backtest", key="run_portfolio_scenario_button"):
+        with st.spinner("Running scenario backtest..."):
+            try:
+                scenario_root = run_portfolio_scenario(bundle, stress_multipliers)
+            except Exception as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["active_scenario_root"] = str(scenario_root)
+                load_result_bundle.clear()
+                st.success(f"Scenario run completed: `{scenario_root.name}`")
+
+    scenarios = list_portfolio_scenarios()
+    if not scenarios:
+        st.info("No scenario backtests available yet. Run one with the button above.")
+        return
+
+    active_root = st.session_state.get("active_scenario_root")
+    labels = [item["label"] for item in scenarios]
+    default_index = 0
+    if active_root is not None:
+        for idx, item in enumerate(scenarios):
+            if str(item["root"]) == str(active_root):
+                default_index = idx
+                break
+
+    selected_label = st.selectbox(
+        "Scenario Artifacts",
+        labels,
+        index=default_index,
+        key="scenario_artifact_selector",
+    )
+    selected_scenario = next(item for item in scenarios if item["label"] == selected_label)
+    scenario_bundle = load_result_bundle(results_dir=str(selected_scenario["root"]))
+    if scenario_bundle is None:
+        st.error("Selected scenario artifacts could not be loaded.")
+        return
+    if not scenario_matches_baseline(bundle, scenario_bundle):
+        st.warning(
+            "This scenario bundle does not declare compatibility with the active baseline, "
+            "so comparison is blocked."
+        )
+        return
+
+    scenario_manifest = scenario_bundle.manifest or {}
+    st.caption(
+        f"Comparing baseline `{(bundle.manifest or {}).get('generated_at', 'unknown')}` "
+        f"vs scenario `{scenario_manifest.get('scenario_id', 'unknown')}` "
+        f"generated at `{scenario_manifest.get('generated_at', 'unknown')}`."
+    )
+
+    baseline_profile = _build_portfolio_profile_from_bundle(
+        bundle=bundle,
+        config=config,
+        instrument_specs=instrument_specs,
+        risk_free_rate=risk_free_rate,
+        label="Baseline",
+    )
+    scenario_profile = _build_portfolio_profile_from_bundle(
+        bundle=scenario_bundle,
+        config=config,
+        instrument_specs=instrument_specs,
+        risk_free_rate=risk_free_rate,
+        label=str(scenario_manifest.get("scenario_id", "Scenario")),
+    )
+
+    st.plotly_chart(
+        build_scenario_comparison_figure(
+            baseline_equity=baseline_profile.equity,
+            scenario_equity=scenario_profile.equity,
+            title="Baseline vs Scenario Backtest",
+        ),
+        width="stretch",
+    )
+    _render_scenario_comparison_table(baseline_profile, scenario_profile, config)
 
 
 def _build_strategy_profiles(
@@ -218,6 +470,7 @@ def _build_strategy_profiles(
     config: RiskDashboardConfig,
     instrument_specs: Dict[str, Dict[str, float]],
     risk_free_rate: float,
+    stress_multipliers: StressMultipliers,
 ) -> Dict[str, RiskProfile]:
     """Builds baseline strategy risk profiles for the portfolio strategy table."""
     profiles: Dict[str, RiskProfile] = {}
@@ -243,7 +496,7 @@ def _build_strategy_profiles(
             tail_confidence=config.var_confidence_tail,
             rolling_var_window_days=config.rolling_var_window_days,
             rolling_vol_windows=config.rolling_vol_windows,
-            stress_multipliers=config.stress_defaults,
+            stress_multipliers=stress_multipliers,
             risk_free_rate=risk_free_rate,
         )
     return profiles
@@ -264,21 +517,22 @@ def _render_strategy_snapshot_table(
         rows.append(
             {
                 "Strategy": strategy_name,
-                f"VaR {primary_label}": _fmt_currency(profile.summary.get("var_primary", float("nan"))),
-                f"ES {primary_label}": _fmt_currency(profile.summary.get("es_primary", float("nan"))),
-                "Max DD": _fmt_pct(profile.summary.get("max_drawdown_pct", float("nan"))),
-                "DD 95": _fmt_pct(profile.summary.get("drawdown_95_pct", float("nan"))),
-                "Latest Vol": _fmt_pct(profile.summary.get("latest_vol_pct", float("nan"))),
-                "Sharpe": (
-                    f"{profile.summary['sharpe']:.2f}"
-                    if not pd.isna(profile.summary.get("sharpe", float("nan")))
-                    else "N/A"
-                ),
+                f"VaR {primary_label} Loss": float(profile.summary.get("var_primary", float("nan"))),
+                f"ES {primary_label} Loss": float(profile.summary.get("es_primary", float("nan"))),
+                "Max DD": float(profile.summary.get("max_drawdown_pct", float("nan"))),
+                "DD 95": float(profile.summary.get("drawdown_95_pct", float("nan"))),
+                "Latest Vol": float(profile.summary.get("latest_vol_pct", float("nan"))),
+                "Sharpe": float(profile.summary.get("sharpe", float("nan"))),
             }
         )
 
     table = pd.DataFrame(rows).sort_values(by="Strategy")
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    _render_formatted_table(
+        table,
+        currency_cols=(f"VaR {primary_label} Loss", f"ES {primary_label} Loss"),
+        pct_cols=("Max DD", "DD 95", "Latest Vol"),
+        float_cols=("Sharpe",),
+    )
 
 
 def render_risk_tab(
@@ -324,6 +578,13 @@ def render_risk_tab(
         with portfolio_top:
             _render_risk_profile_core(portfolio_profile, config)
         _render_stress_analysis(portfolio_profile, config)
+        _render_scenario_backtest_section(
+            bundle=bundle,
+            config=config,
+            instrument_specs=instrument_specs,
+            risk_free_rate=risk_free_rate,
+            stress_multipliers=portfolio_stress,
+        )
         st.divider()
         st.markdown("#### Strategy Risk Drilldown")
         st.caption(
@@ -331,7 +592,14 @@ def render_risk_tab(
             "Portfolio-only diversification effects are intentionally excluded."
         )
 
-        strategy_profiles = _build_strategy_profiles(bundle, config, instrument_specs, risk_free_rate)
+        strategy_stress_state = _get_stress_state("strategy", config)
+        strategy_profiles = _build_strategy_profiles(
+            bundle,
+            config,
+            instrument_specs,
+            risk_free_rate,
+            strategy_stress_state,
+        )
         _render_strategy_snapshot_table(strategy_profiles, config)
 
         strategy_names = sorted(strategy_profiles.keys())
