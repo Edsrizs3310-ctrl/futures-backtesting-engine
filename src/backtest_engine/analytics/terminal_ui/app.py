@@ -20,6 +20,9 @@ from src.backtest_engine.analytics.terminal_ui.routes_operations import (
 from src.backtest_engine.analytics.terminal_ui.routes_partials import (
     register_partial_routes,
 )
+from src.backtest_engine.analytics.terminal_ui.constants import (
+    DEFAULT_RISK_SHARPE_HORIZON,
+)
 from src.backtest_engine.analytics.terminal_ui.service import (
     inspect_terminal_bundle,
     load_terminal_bundle,
@@ -173,6 +176,11 @@ def create_terminal_dashboard_app(results_dir: Optional[str] = None) -> FastAPI:
                 "request": request,
                 "page_title": "Quant Terminal",
                 "shell": shell,
+                "loading_words": list(runtime.loading_words),
+                "loading_word_interval_ms": runtime.loading_word_interval_ms,
+                "loading_eta_per_request_seconds": runtime.loading_eta_per_request_seconds,
+                "default_risk_vol_window_days": runtime.risk_config.rolling_vol_windows[0],
+                "default_risk_sharpe_horizon": DEFAULT_RISK_SHARPE_HORIZON,
             },
         )
 

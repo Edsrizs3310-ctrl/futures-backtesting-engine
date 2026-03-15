@@ -4,6 +4,28 @@
             <h2>Risk</h2>
             <p>{{ profile_label }} profile rendered from canonical transforms only.</p>
         </div>
+        <div class="terminal-panel__controls">
+            <label class="terminal-field terminal-field--inline">
+                <span>Vol Window</span>
+                <select id="risk-vol-window-select">
+                    {% for option in risk_vol_window_options %}
+                    <option value="{{ option.value }}" {% if option.value == active_risk_vol_window_days %}selected{% endif %}>
+                        {{ option.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="terminal-field terminal-field--inline">
+                <span>Sharpe Horizon</span>
+                <select id="risk-sharpe-horizon-select">
+                    {% for option in risk_sharpe_horizon_options %}
+                    <option value="{{ option.value }}" {% if option.value == active_risk_sharpe_horizon %}selected{% endif %}>
+                        {{ option.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
     </div>
 
     <div class="metric-grid metric-grid--compact">
@@ -11,6 +33,10 @@
             {% include "components/metric_card.html" %}
         {% endfor %}
     </div>
+
+    {% if methodology_notice %}
+    <div class="terminal-inline-notice">{{ methodology_notice }}</div>
+    {% endif %}
 
     <div class="terminal-split terminal-split--equal">
         <section class="terminal-chart-card">

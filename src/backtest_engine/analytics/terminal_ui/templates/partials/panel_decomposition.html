@@ -1,4 +1,4 @@
-<section class="terminal-panel__stack">
+<section class="terminal-panel__stack terminal-panel__stack--fill">
     <div class="terminal-panel__header">
         <div>
             <h2>Strategy Decomposition</h2>
@@ -9,9 +9,10 @@
     {% if is_available %}
     {% include "components/table.html" with context %}
     <div
-        class="terminal-chart terminal-chart--large"
+        class="terminal-chart terminal-chart--large terminal-chart--fill"
         data-chart-renderer="bar"
         data-chart-endpoint="/api/charts/decomposition"
+        data-decomposition-linked="true"
     ></div>
     {% else %}
     <div class="terminal-empty-state">No multi-strategy decomposition is available for this run type.</div>

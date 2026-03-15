@@ -313,3 +313,23 @@ class TerminalUISettings(BaseModel):
         default_factory=lambda: ["#F59E0B", "#FBBF24", "#EF4444"],
         description="Palette used for VaR / ES risk overlays.",
     )
+
+    # ── 8. Terminal Loading Overlay ───────────────────────────────────────────
+    terminal_loading_words: list[str] = Field(
+        default_factory=lambda: [
+            "Put red box into green.",
+            "Oh, no! Claude, what you did!?",
+            "Please, put red box into green one! Make no mistakes!",
+            "It worked!",
+            "Oh..., I forgot about the yellow one.",
+        ],
+        description="Rotating loading captions. And yes, you can change them... ;)",
+    )
+    terminal_loading_word_interval_ms: int = Field(
+        default=1100,
+        description="Interval in milliseconds for loading-word rotation.",
+    )
+    terminal_loading_eta_per_request_seconds: float = Field(
+        default=2.2,
+        description="Fallback ETA estimate (seconds) per pending chart request.",
+    )

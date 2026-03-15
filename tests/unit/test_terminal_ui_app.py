@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
+import pandas as pd
 from fastapi.testclient import TestClient
 
+from src.backtest_engine.analytics.dashboard.core.data_layer import ResultBundle
+from src.backtest_engine.analytics.terminal_ui.chart_builders import (
+    build_equity_chart_payload,
+)
 from src.backtest_engine.analytics.terminal_ui.app import create_terminal_dashboard_app
+from src.backtest_engine.analytics.terminal_ui.service import (
+    load_terminal_runtime_context,
+)
 
 
 def test_terminal_ui_root_renders_portfolio_shell(
@@ -214,6 +223,40 @@ def test_equity_chart_drawdown_series_is_separate_from_equity_series(
     assert len(equity_series) >= 1, "At least one equity series must exist alongside the overlay"
     for s in equity_series:
         assert s.get("priceScaleId", "right") != "drawdown"
+
+
+def test_equity_chart_payload_keeps_full_history_for_long_portfolio_runs() -> None:
+    """Main Equity should bypass the generic chart point cap and keep full history."""
+    point_count = 2505
+    index = pd.date_range("2024-01-01 09:30:00", periods=point_count, freq="min")
+    history = pd.DataFrame(
+        {
+            "total_value": 1_000_000.0 + pd.Series(range(point_count), index=index).astype(float).values,
+            "slot_0_pnl": pd.Series(range(point_count), index=index).astype(float).values,
+            "slot_1_pnl": (pd.Series(range(point_count), index=index) * 0.5).astype(float).values,
+        },
+        index=index,
+    )
+    benchmark = pd.DataFrame(
+        {"close": 5000.0 + pd.Series(range(point_count), index=index).astype(float).values},
+        index=index,
+    )
+    bundle = ResultBundle(
+        run_type="portfolio",
+        history=history,
+        trades=pd.DataFrame(),
+        benchmark=benchmark,
+        manifest={"slots": {"0": "StrategyA", "1": "StrategyB"}},
+        slots={"0": "StrategyA", "1": "StrategyB"},
+    )
+    runtime = replace(load_terminal_runtime_context(), max_chart_points=2000)
+
+    payload = build_equity_chart_payload(bundle, runtime)
+
+    assert payload["series"], "Equity payload should contain benchmark, strategy, total, and drawdown series"
+    assert all(len(series["points"]) == point_count for series in payload["series"]), (
+        "Main Equity must include the complete history for every rendered series"
+    )
 
 
 # ---------------------------------------------------------------------------

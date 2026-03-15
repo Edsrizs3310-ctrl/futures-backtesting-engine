@@ -2,6 +2,8 @@ from __future__ import annotations
 
 DEFAULT_BOTTOM_TAB = "pnl-distribution"
 DEFAULT_CORRELATION_HORIZON = "1d"
+DEFAULT_RISK_SHARPE_HORIZON = "1d"
+RISK_SHARPE_HORIZON_OPTIONS: tuple[str, ...] = ("1d", "1w", "1m")
 
 BASE_BOTTOM_TABS: tuple[dict[str, str], ...] = (
     {"id": "pnl-distribution", "label": "PnL Distribution"},
@@ -33,4 +35,20 @@ LABEL_PEAK_THRESHOLD = "Peak"
 LABEL_VAR_95 = "VaR 95"
 LABEL_CVAR_95 = "CVaR 95"
 LABEL_VAR_99 = "VaR 99"
+LABEL_MEAN = "Mean"
 Y_AXIS_CUMULATIVE_PNL = "Cumulative PnL ($)"
+
+# PnL distribution histogram defaults.
+PNL_DIST_BASE_BINS_CAP = 40
+PNL_DIST_BASE_BINS_FLOOR = 10
+PNL_DIST_DETAILED_BINS_CAP = 120
+PNL_DIST_DETAILED_BINS_FLOOR = 30
+PNL_DIST_DETAILED_MULTIPLIER = 3
+PNL_DIST_SAMPLE_BIN_FLOOR = 20
+PNL_DIST_SAMPLE_BIN_CAP = 160
+PNL_DIST_FD_WIDTH_FACTOR = 2.0
+
+# Decomposition chart defaults.
+DECOMPOSITION_SORT_COLUMN = "PnL Contrib (%)"
+DECOMPOSITION_RISK_COLUMN = "Risk Contrib (%)"
+DECOMPOSITION_PNL_CONTRIB_COLUMN = "PnL Contrib (%)"

@@ -1,4 +1,4 @@
-<section class="terminal-panel__stack">
+<section class="terminal-panel__stack terminal-panel__stack--fill">
     <div class="terminal-panel__header">
         <div>
             <h2>Correlations</h2>
@@ -19,7 +19,7 @@
     </div>
 
     {% if is_portfolio %}
-    <div class="terminal-split terminal-split--equal" id="correlation-heatmaps">
+    <div class="terminal-split terminal-split--equal terminal-split--fill" id="correlation-heatmaps">
         {% with title="Strategy PnL Correlation", subtitle="Incremental PnL, not cumulative equity.", endpoint="/api/charts/strategy-correlation?horizon=" ~ horizon %}
             {% include "components/heatmap.html" %}
         {% endwith %}

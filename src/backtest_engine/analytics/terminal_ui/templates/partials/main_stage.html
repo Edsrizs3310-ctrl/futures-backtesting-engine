@@ -4,6 +4,12 @@
             <h2>Main Equity</h2>
             <p>Primary chart loads first; lower panels hydrate after the first screen is usable.</p>
         </div>
+        <div class="terminal-panel__controls">
+            <label class="terminal-field terminal-field--inline">
+                <input type="checkbox" id="toggle-benchmark" checked>
+                <span>Show Benchmark</span>
+            </label>
+        </div>
     </div>
     <div
         class="terminal-chart terminal-chart--main"
@@ -19,12 +25,3 @@
     {% endif %}
 </section>
 
-<section class="terminal-panel terminal-panel--scroll">
-    <div class="terminal-panel__header">
-        <div>
-            <h2>Terminal Report</h2>
-            <p>Current report output remains the parity oracle for terminal validation.</p>
-        </div>
-    </div>
-    <pre class="terminal-report-full">{{ shell.report_preview }}</pre>
-</section>

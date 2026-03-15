@@ -46,6 +46,9 @@ class TerminalRuntimeContext:
     rolling_vol_colors: Tuple[str, ...]
     stress_colors: Tuple[str, ...]
     var_colors: Tuple[str, ...]
+    loading_words: Tuple[str, ...]
+    loading_word_interval_ms: int
+    loading_eta_per_request_seconds: float
     max_chart_points: int = 2000
     trade_page_size: int = 25
 
@@ -219,6 +222,25 @@ def _build_terminal_runtime_context(
                 ["#F59E0B", "#FBBF24", "#EF4444"],
             )
         ),
+        loading_words=tuple(
+            _setting_value(
+                resolved_settings,
+                "terminal_loading_words",
+                [
+                    "Loading data",
+                    "Building correlations",
+                    "Syncing charts",
+                    "Computing metrics",
+                    "Finalizing view",
+                ],
+            )
+        ),
+        loading_word_interval_ms=int(
+            _setting_value(resolved_settings, "terminal_loading_word_interval_ms", 1100)
+        ),
+        loading_eta_per_request_seconds=float(
+            _setting_value(resolved_settings, "terminal_loading_eta_per_request_seconds", 2.2)
+        ),
         max_chart_points=int(_setting_value(resolved_settings, "terminal_max_chart_points", 2000)),
         trade_page_size=int(_setting_value(resolved_settings, "terminal_trade_page_size", 25)),
     )
@@ -293,10 +315,10 @@ def _cache_payload(
     )
 
 
-def _downsample_series(series: pd.Series, max_points: int) -> pd.Series:
+def _downsample_series(series: pd.Series, max_points: Optional[int]) -> pd.Series:
     """Returns a roughly even downsampled series for browser-friendly payloads."""
     clean = series.dropna().astype(float)
-    if clean.empty or len(clean) <= max_points:
+    if clean.empty or max_points is None or max_points <= 0 or len(clean) <= max_points:
         return clean
     step = max(1, len(clean) // max_points)
     sampled = clean.iloc[::step]
@@ -306,7 +328,7 @@ def _downsample_series(series: pd.Series, max_points: int) -> pd.Series:
     return sampled
 
 
-def _points_from_series(series: pd.Series, max_points: int) -> List[Dict[str, float | str]]:
+def _points_from_series(series: pd.Series, max_points: Optional[int]) -> List[Dict[str, float | str]]:
     """Converts a time series into JSON-ready chart points."""
     sampled = _downsample_series(series, max_points=max_points)
     return [

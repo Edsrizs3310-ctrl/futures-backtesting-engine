@@ -17,16 +17,28 @@ from src.backtest_engine.analytics.dashboard.core.transforms.pnl import (
     derive_daily_pnl_from_equity,
 )
 from src.backtest_engine.analytics.terminal_ui.constants import (
+    DECOMPOSITION_PNL_CONTRIB_COLUMN,
+    DECOMPOSITION_RISK_COLUMN,
+    DECOMPOSITION_SORT_COLUMN,
     LABEL_BENCHMARK,
     LABEL_CVAR_95,
     LABEL_DRAWDOWN_PCT,
     LABEL_LONG,
+    LABEL_MEAN,
     LABEL_PORTFOLIO_TOTAL,
     LABEL_SHORT,
     LABEL_STRATEGY,
     LABEL_VAR_95,
     LABEL_VAR_99,
     LABEL_ZERO_THRESHOLD,
+    PNL_DIST_BASE_BINS_CAP,
+    PNL_DIST_BASE_BINS_FLOOR,
+    PNL_DIST_DETAILED_BINS_CAP,
+    PNL_DIST_DETAILED_BINS_FLOOR,
+    PNL_DIST_DETAILED_MULTIPLIER,
+    PNL_DIST_FD_WIDTH_FACTOR,
+    PNL_DIST_SAMPLE_BIN_CAP,
+    PNL_DIST_SAMPLE_BIN_FLOOR,
     TITLE_EQUITY_CURVE,
     TITLE_EXPOSURE_CORRELATION,
     TITLE_PNL_DISTRIBUTION,
@@ -52,6 +64,8 @@ def build_equity_chart_payload(
     runtime: TerminalRuntimeContext,
 ) -> Dict[str, Any]:
     """Builds the payload for the primary TradingView equity chart."""
+    # Main Equity must expose the complete backtest history for portfolio review.
+    full_history_points = None
     initial_capital = float(bundle.history["total_value"].iloc[0])
     series: List[Dict[str, Any]] = []
 
@@ -68,7 +82,7 @@ def build_equity_chart_payload(
                     "color": runtime.benchmark_color,
                     "lineWidth": 2,
                     "style": 1,
-                    "points": _points_from_series(benchmark_pnl, runtime.max_chart_points),
+                    "points": _points_from_series(benchmark_pnl, full_history_points),
                 }
             )
 
@@ -77,12 +91,13 @@ def build_equity_chart_payload(
             column_name = f"slot_{slot_id}_pnl"
             if column_name not in bundle.history.columns:
                 continue
+            display_name = strategy_name.replace("Strategy", "").rstrip()
             series.append(
                 {
-                    "name": strategy_name,
+                    "name": display_name,
                     "color": runtime.strategy_colors[index % len(runtime.strategy_colors)],
                     "lineWidth": 2,
-                    "points": _points_from_series(bundle.history[column_name], runtime.max_chart_points),
+                    "points": _points_from_series(bundle.history[column_name], full_history_points),
                 }
             )
         total_pnl = bundle.history["total_value"] - initial_capital
@@ -91,7 +106,7 @@ def build_equity_chart_payload(
                 "name": LABEL_PORTFOLIO_TOTAL,
                 "color": runtime.portfolio_total_color,
                 "lineWidth": 3,
-                "points": _points_from_series(total_pnl, runtime.max_chart_points),
+                "points": _points_from_series(total_pnl, full_history_points),
             }
         )
     else:
@@ -115,7 +130,7 @@ def build_equity_chart_payload(
                         "name": label,
                         "color": color,
                         "lineWidth": 2,
-                        "points": _points_from_series(cumulative, runtime.max_chart_points),
+                        "points": _points_from_series(cumulative, full_history_points),
                     }
                 )
         total_pnl = bundle.history["total_value"] - initial_capital
@@ -124,7 +139,7 @@ def build_equity_chart_payload(
                 "name": LABEL_STRATEGY,
                 "color": runtime.portfolio_total_color,
                 "lineWidth": 3,
-                "points": _points_from_series(total_pnl, runtime.max_chart_points),
+                "points": _points_from_series(total_pnl, full_history_points),
             }
         )
 
@@ -137,7 +152,7 @@ def build_equity_chart_payload(
             "color": runtime.drawdown_color,
             "lineWidth": 1,
             "priceScaleId": "drawdown",
-            "points": _points_from_series(drawdown_pct.fillna(0.0), runtime.max_chart_points),
+            "points": _points_from_series(drawdown_pct.fillna(0.0), full_history_points),
         }
     )
 
@@ -195,7 +210,26 @@ def build_pnl_distribution_payload(
     if clean.empty:
         return {"title": TITLE_PNL_DISTRIBUTION, "bins": [], "markers": []}
 
-    histogram, edges = np.histogram(clean, bins=min(40, max(10, int(np.sqrt(len(clean))))))
+    sample_count = int(len(clean))
+    base_bins = min(PNL_DIST_BASE_BINS_CAP, max(PNL_DIST_BASE_BINS_FLOOR, int(np.sqrt(sample_count))))
+    detailed_bins = min(
+        PNL_DIST_DETAILED_BINS_CAP,
+        max(PNL_DIST_DETAILED_BINS_FLOOR, base_bins * PNL_DIST_DETAILED_MULTIPLIER),
+    )
+    sturges_bins = int(np.ceil(np.log2(sample_count) + 1))
+
+    q75, q25 = np.percentile(clean, [75, 25])
+    iqr = float(q75 - q25)
+    fd_bins = 0
+    if iqr > 0:
+        bin_width = PNL_DIST_FD_WIDTH_FACTOR * iqr / np.cbrt(sample_count)
+        data_span = float(clean.max() - clean.min())
+        if bin_width > 0 and data_span > 0:
+            fd_bins = int(np.ceil(data_span / bin_width))
+
+    max_bins_by_sample = max(PNL_DIST_SAMPLE_BIN_FLOOR, min(PNL_DIST_SAMPLE_BIN_CAP, sample_count))
+    resolved_bins = max(sturges_bins, fd_bins, detailed_bins)
+    histogram, edges = np.histogram(clean, bins=min(max_bins_by_sample, resolved_bins))
     stats = compute_pnl_dist_stats(clean)
     bins = []
     for idx, count in enumerate(histogram.tolist()):
@@ -209,6 +243,7 @@ def build_pnl_distribution_payload(
             {"label": LABEL_VAR_95, "value": -float(stats["var_95"])},
             {"label": LABEL_CVAR_95, "value": -float(stats["cvar_95"]) if not pd.isna(stats["cvar_95"]) else None},
             {"label": LABEL_VAR_99, "value": -float(stats["var_99"])},
+            {"label": LABEL_MEAN, "value": float(stats["mean"]) if not pd.isna(stats["mean"]) else None},
         ],
         "summary": stats,
     }
@@ -217,24 +252,34 @@ def build_pnl_distribution_payload(
 def build_decomposition_chart_payload(
     bundle: ResultBundle,
     runtime: TerminalRuntimeContext,
+    *,
+    sort_by: str = DECOMPOSITION_SORT_COLUMN,
 ) -> Dict[str, Any]:
     """Builds a compact bar-chart payload from the decomposition table."""
-    table = build_decomposition_table(bundle=bundle, runtime=runtime)
+    table = build_decomposition_table(bundle=bundle, runtime=runtime, sort_by=sort_by)
     if table.empty:
         return {"title": TITLE_STRATEGY_DECOMPOSITION, "categories": [], "series": []}
+
+    pnl_contrib_series = table[DECOMPOSITION_PNL_CONTRIB_COLUMN].fillna(0.0).astype(float)
+    risk_series = table[DECOMPOSITION_RISK_COLUMN].fillna(0.0).astype(float)
+    if float(risk_series.abs().max()) <= 1.0:
+        risk_series = risk_series * 100.0
+
     return {
         "title": TITLE_STRATEGY_DECOMPOSITION,
+        "yAxisFormat": "percent",
+        "showAllCategoryLabels": True,
         "categories": table["Strategy"].tolist(),
         "series": [
             {
-                "name": "Closed PnL ($)",
-                "values": [float(value) for value in table["Closed PnL ($)"].fillna(0.0)],
+                "name": DECOMPOSITION_PNL_CONTRIB_COLUMN,
+                "values": [float(value) for value in pnl_contrib_series],
                 "yAxisIndex": 0,
             },
             {
-                "name": "Risk Contrib (%)",
-                "values": [float(value) for value in table["Risk Contrib (%)"].fillna(0.0)],
-                "yAxisIndex": 1,
+                "name": DECOMPOSITION_RISK_COLUMN,
+                "values": [float(value) for value in risk_series],
+                "yAxisIndex": 0,
             },
         ],
     }
@@ -245,6 +290,7 @@ def _build_heatmap_payload(
     title: str,
     *,
     dropped_labels: Optional[Sequence[str]] = None,
+    empty_reason: str = "",
 ) -> Dict[str, Any]:
     """Converts a correlation matrix into an ECharts-ready heatmap payload."""
     if matrix.empty:
@@ -254,6 +300,7 @@ def _build_heatmap_payload(
             "yLabels": [],
             "values": [],
             "droppedLabels": list(dropped_labels or []),
+            "emptyReason": empty_reason,
         }
     values = []
     for y_index, row_name in enumerate(matrix.index.tolist()):
@@ -265,6 +312,7 @@ def _build_heatmap_payload(
         "yLabels": matrix.index.tolist(),
         "values": values,
         "droppedLabels": list(dropped_labels or []),
+        "emptyReason": "",
     }
 
 
@@ -275,20 +323,43 @@ def build_strategy_correlation_payload(
 ) -> Dict[str, Any]:
     """Builds the strategy-correlation heatmap payload."""
     if bundle.run_type != "portfolio":
-        return _build_heatmap_payload(pd.DataFrame(), TITLE_STRATEGY_CORRELATION)
+        return _build_heatmap_payload(
+            pd.DataFrame(),
+            TITLE_STRATEGY_CORRELATION,
+            empty_reason="Correlation analysis requires portfolio mode.",
+        )
+
+    bar_pnl = build_bar_pnl_matrix(bundle.history, bundle.slots or {})
+    if bar_pnl.empty or bar_pnl.shape[1] < 2:
+        return _build_heatmap_payload(
+            pd.DataFrame(),
+            TITLE_STRATEGY_CORRELATION,
+            empty_reason="Need at least 2 active strategies with incremental PnL history.",
+        )
+
+    def _compute_payload() -> Dict[str, Any]:
+        matrix = compute_strategy_correlation(bar_pnl, horizon=horizon)
+        if matrix.empty:
+            return _build_heatmap_payload(
+                pd.DataFrame(),
+                f"{TITLE_STRATEGY_CORRELATION} ({horizon})",
+                empty_reason=(
+                    "Too few observations for this horizon. "
+                    "Try 1D or run a longer backtest."
+                ),
+            )
+        return _build_heatmap_payload(
+            matrix,
+            f"{TITLE_STRATEGY_CORRELATION} ({horizon})",
+        )
+
     return _cache_payload(
         runtime,
         bundle,
         metric_name="strategy_correlation",
         parameters={"horizon": horizon},
         ttl_seconds=runtime.cache_service.policy.correlation_ttl_seconds,
-        compute_fn=lambda: _build_heatmap_payload(
-            compute_strategy_correlation(
-                build_bar_pnl_matrix(bundle.history, bundle.slots or {}),
-                horizon=horizon,
-            ),
-            f"{TITLE_STRATEGY_CORRELATION} ({horizon})",
-        ),
+        compute_fn=_compute_payload,
     )
 
 
@@ -299,14 +370,49 @@ def build_exposure_correlation_payload(
 ) -> Dict[str, Any]:
     """Builds the exposure-correlation heatmap payload."""
     if bundle.exposure is None or bundle.exposure.empty:
-        return _build_heatmap_payload(pd.DataFrame(), TITLE_EXPOSURE_CORRELATION)
+        return _build_heatmap_payload(
+            pd.DataFrame(),
+            TITLE_EXPOSURE_CORRELATION,
+            empty_reason="No exposure artifact found for this run.",
+        )
+
+    exposure_columns = [c for c in bundle.exposure.columns if c.endswith("_notional")]
+    symbol_set = set()
+    for column_name in exposure_columns:
+        parts = column_name.split("_")
+        if len(parts) >= 4 and parts[0] == "slot" and parts[-1] == "notional":
+            symbol_set.add("_".join(parts[2:-1]))
+    if len(symbol_set) < 2:
+        symbols = sorted(symbol_set)
+        symbol_hint = ", ".join(symbols) if symbols else "none"
+        return _build_heatmap_payload(
+            pd.DataFrame(),
+            TITLE_EXPOSURE_CORRELATION,
+            empty_reason=(
+                "Exposure correlation needs at least 2 distinct instruments. "
+                f"Detected {len(symbols)} ({symbol_hint})."
+            ),
+        )
 
     def _compute_payload() -> Dict[str, Any]:
         matrix, dropped = compute_exposure_correlation(bundle.exposure, horizon=horizon)
+        empty_reason = ""
+        if matrix.empty:
+            if dropped and len(dropped) >= len(symbol_set):
+                empty_reason = (
+                    "All symbols were dropped due to low variance or insufficient samples "
+                    "for this horizon."
+                )
+            else:
+                empty_reason = (
+                    "Too few valid exposure observations for this horizon. "
+                    "Try 1D or a longer sample."
+                )
         return _build_heatmap_payload(
             matrix,
             f"{TITLE_EXPOSURE_CORRELATION} ({horizon})",
             dropped_labels=dropped,
+            empty_reason=empty_reason,
         )
 
     return _cache_payload(

@@ -15,6 +15,7 @@ from src.backtest_engine.analytics.terminal_ui.chart_builders import (
     build_strategy_correlation_payload,
 )
 from src.backtest_engine.analytics.terminal_ui.constants import (
+    DECOMPOSITION_SORT_COLUMN,
     DEFAULT_CORRELATION_HORIZON,
 )
 from src.backtest_engine.analytics.terminal_ui.risk_builders import (
@@ -75,12 +76,12 @@ def register_chart_routes(
         return JSONResponse(build_pnl_distribution_payload(bundle))
 
     @app.get("/api/charts/decomposition", response_class=JSONResponse)
-    def decomposition_chart() -> JSONResponse:
+    def decomposition_chart(sort_by: str = DECOMPOSITION_SORT_COLUMN) -> JSONResponse:
         """Returns JSON for the strategy decomposition bar chart."""
         bundle, error_response = _load_bundle_json()
         if error_response is not None:
             return error_response
-        return JSONResponse(build_decomposition_chart_payload(bundle, runtime))
+        return JSONResponse(build_decomposition_chart_payload(bundle, runtime, sort_by=sort_by))
 
     @app.get("/api/charts/strategy-correlation", response_class=JSONResponse)
     def strategy_correlation_chart(horizon: str = DEFAULT_CORRELATION_HORIZON) -> JSONResponse:

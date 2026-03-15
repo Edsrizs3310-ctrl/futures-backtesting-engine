@@ -13,6 +13,7 @@ from src.backtest_engine.analytics.dashboard.core.transforms import (
 from src.backtest_engine.analytics.dashboard.risk_analysis.models import StressMultipliers
 from src.backtest_engine.analytics.terminal_ui.constants import (
     BASE_BOTTOM_TABS,
+    DECOMPOSITION_SORT_COLUMN,
     DEFAULT_BOTTOM_TAB,
     DEFAULT_CORRELATION_HORIZON,
     PORTFOLIO_ONLY_BOTTOM_TABS,
@@ -96,11 +97,50 @@ def build_shell_context(
     )
 
 
+def _format_hold_time(total_minutes: float) -> str:
+    """Formats a hold-time duration (in minutes) as a compact human-readable string."""
+    if pd.isna(total_minutes) or total_minutes < 0:
+        return "N/A"
+    hours = int(total_minutes // 60)
+    minutes = int(total_minutes % 60)
+    if minutes == 0:
+        return f"{hours}h"
+    return f"{hours}h {minutes}m"
+
+
+def _compute_hold_time_minutes(trades: pd.DataFrame) -> Tuple[float, float, float]:
+    """
+    Derives max, min, and average hold time in minutes from a trades frame.
+
+    Returns (max_minutes, min_minutes, avg_minutes); all NaN when unavailable.
+    """
+    nan = float("nan")
+    if trades is None or trades.empty:
+        return nan, nan, nan
+    if "entry_time" not in trades.columns or "exit_time" not in trades.columns:
+        return nan, nan, nan
+    durations = (
+        pd.to_datetime(trades["exit_time"]) - pd.to_datetime(trades["entry_time"])
+    ).dt.total_seconds() / 60.0
+    durations = durations.dropna()
+    if durations.empty:
+        return nan, nan, nan
+    return float(durations.max()), float(durations.min()), float(durations.mean())
+
+
 def build_top_ribbon_metrics(
     bundle: ResultBundle,
     runtime: TerminalRuntimeContext,
 ) -> List[Dict[str, str]]:
-    """Builds the above-the-fold metric ribbon from canonical metric sources."""
+    """
+    Builds three rows of metric cards covering the full terminal report output.
+
+    Ordering methodology:
+    1) Headline outcome and drawdown come first.
+    2) Closely related quality pairs remain adjacent (Sharpe + Deflated Sharpe,
+       T-Stat + P-Value).
+    3) Trade-quality and execution diagnostics remain in later positions.
+    """
     base_profile = _build_risk_profile_for_scope(
         bundle=bundle,
         runtime=runtime,
@@ -108,19 +148,39 @@ def build_top_ribbon_metrics(
         stress=StressMultipliers(volatility=1.0, slippage=1.0, commission=1.0),
     )
     metrics = bundle.metrics or {}
+    max_hold, min_hold, avg_hold = _compute_hold_time_minutes(bundle.trades)
 
     def _metric(label: str, value: str) -> Dict[str, str]:
         return {"label": label, "value": value}
 
+    nan = float("nan")
     return [
-        _metric("Total Return", _format_pct(float(metrics.get("Total Return", float("nan"))) * 100.0)),
-        _metric("CAGR", _format_pct(float(metrics.get("CAGR", float("nan"))) * 100.0)),
-        _metric("Total PnL", _format_currency(float(base_profile.summary.get("total_pnl", float("nan"))))),
-        _metric("Sharpe", _format_ratio(float(base_profile.summary.get("sharpe", float("nan"))))),
-        _metric("Max DD", _format_pct(float(base_profile.summary.get("max_drawdown_pct", float("nan"))))),
-        _metric("VaR 95", _format_currency(float(base_profile.summary.get("var_primary", float("nan"))))),
-        _metric("Win Rate", _format_pct(float(metrics.get("Win Rate", float("nan"))) * 100.0)),
+        # Row 1 — outcome and primary risk context
+        _metric("Total Return", _format_pct(float(metrics.get("Total Return", nan)) * 100.0)),
+        _metric("CAGR", _format_pct(float(metrics.get("CAGR", nan)) * 100.0)),
+        _metric("Total PnL", _format_currency(float(base_profile.summary.get("total_pnl", nan)))),
+        _metric("Max DD", _format_pct(float(metrics.get("Max Drawdown", nan)) * 100.0)),
+        _metric("Volatility", _format_pct(float(metrics.get("Volatility", nan)) * 100.0)),
+        _metric("VaR 95", _format_currency(float(base_profile.summary.get("var_primary", nan)))),
+        # Keep this pair adjacent for quick quality validation.
+        _metric("Sharpe", _format_ratio(float(metrics.get("Sharpe Ratio", nan)))),
+        _metric("Defl. Sharpe", _format_ratio(float(metrics.get("Deflated Sharpe Ratio", nan)))),
+        # Row 2 — risk-adjusted and trade-quality diagnostics
+        _metric("Sortino", _format_ratio(float(metrics.get("Sortino Ratio", nan)))),
+        _metric("Calmar", _format_ratio(float(metrics.get("Calmar Ratio", nan)))),
+        _metric("Profit Factor", _format_ratio(float(metrics.get("Profit Factor", nan)))),
+        _metric("Win Rate", _format_pct(float(metrics.get("Win Rate", nan)) * 100.0)),
+        _metric("Avg Trade", _format_currency(float(metrics.get("Avg Trade", nan)))),
+        _metric("Avg Win", _format_currency(float(metrics.get("Avg Win", nan)))),
+        _metric("Avg Loss", _format_currency(float(metrics.get("Avg Loss", nan)))),
         _metric("Trades", f"{int(metrics.get('Total Trades', 0)):,}"),
+        # Row 3 — statistical significance and execution stats
+        # Keep this pair adjacent for significance interpretation.
+        _metric("T-Stat", _format_ratio(float(metrics.get("T-Statistic", nan)))),
+        _metric("P-Value", _format_ratio(float(metrics.get("P-Value", nan)))),
+        _metric("Max Hold", _format_hold_time(max_hold)),
+        _metric("Avg Hold", _format_hold_time(avg_hold)),
+        _metric("Min Hold", _format_hold_time(min_hold)),
     ]
 
 
@@ -133,16 +193,41 @@ def build_strategy_stats_table(bundle: ResultBundle) -> pd.DataFrame:
 def build_decomposition_table(
     bundle: ResultBundle,
     runtime: TerminalRuntimeContext,
+    *,
+    sort_by: str = DECOMPOSITION_SORT_COLUMN,
 ) -> pd.DataFrame:
     """Builds the strategy decomposition table for portfolio mode."""
     if bundle.run_type != "portfolio":
         return pd.DataFrame()
-    return compute_strategy_decomp(
+    table = compute_strategy_decomp(
         trades_df=bundle.trades,
         history=bundle.history,
         slots=bundle.slots or {},
         tail_confidence=runtime.risk_config.var_confidence_primary,
     )
+    if table.empty:
+        return table
+
+    resolved_sort_by = sort_by if sort_by in table.columns else (
+        DECOMPOSITION_SORT_COLUMN if DECOMPOSITION_SORT_COLUMN in table.columns else table.columns[0]
+    )
+    numeric_sort = pd.to_numeric(table[resolved_sort_by], errors="coerce")
+    if numeric_sort.notna().any():
+        sortable = table.assign(__sort_value=numeric_sort)
+        sorted_table = sortable.sort_values(
+            by="__sort_value",
+            ascending=False,
+            na_position="last",
+            kind="mergesort",
+        ).drop(columns=["__sort_value"])
+        return sorted_table.reset_index(drop=True)
+
+    return table.sort_values(
+        by=resolved_sort_by,
+        ascending=True,
+        na_position="last",
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def build_exit_summary_table(bundle: ResultBundle) -> pd.DataFrame:

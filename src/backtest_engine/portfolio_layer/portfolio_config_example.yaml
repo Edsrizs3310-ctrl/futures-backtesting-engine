@@ -43,21 +43,21 @@ strategies:
 
   - strategy: intraday_momentum
     symbols:
-      - GC
+      - ES
     weight: 0.10
     timeframe: 30m
     params: {}
 
   - strategy: sma_pullback
     symbols:
-      - GC
+      - NQ
     weight: 0.15
     timeframe: 30m
     params: {}
 
   - strategy: zscore
     symbols:
-      - GC
+      - CL
     weight: 0.15
     timeframe: 30m
     params: {}

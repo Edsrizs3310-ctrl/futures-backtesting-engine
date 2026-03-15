@@ -4,7 +4,21 @@
         <thead>
             <tr>
                 {% for column in columns %}
-                <th>{{ column }}</th>
+                <th>
+                    {% if enable_header_sort %}
+                    <button
+                        type="button"
+                        class="terminal-table-sort{% if column == active_sort_column %} is-active{% endif %}"
+                        data-sort-column="{{ column }}"
+                        data-sort-tab="{{ sort_tab_id or '' }}"
+                        data-sort-input-id="{{ sort_input_id or '' }}"
+                    >
+                        {{ column }}
+                    </button>
+                    {% else %}
+                    {{ column }}
+                    {% endif %}
+                </th>
                 {% endfor %}
             </tr>
         </thead>
