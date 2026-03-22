@@ -18,41 +18,28 @@ Add real image links after you capture them. Keep the images reasonably wide and
 <img width="1593" height="734" alt="image" src="https://github.com/user-attachments/assets/a1a4cc0b-1a42-43bb-837f-b039d2e12b3f" />
 
 
-```md
-![Terminal UI overview](docs/screenshots/terminal-ui-overview.png)
-```
-
 ### Portfolio Analytics
 
-Portfolio backtest results with shared-capital behavior visible. Prefer a screen that shows allocation, equity curve, or portfolio-level tables.
+<img width="1586" height="732" alt="image" src="https://github.com/user-attachments/assets/b67de6f8-3a00-4109-bdcb-13fccfa6aa2d" />
 
-```md
-![Portfolio analytics](docs/screenshots/portfolio-analytics.png)
-```
 
 ### Exit Analysis
 
-One detailed analytics screen that demonstrates post-run inspection depth. Good candidates are exit breakdown, execution quality, or trade log detail.
+<img width="1553" height="712" alt="image" src="https://github.com/user-attachments/assets/4eb47d2b-c662-4f1a-be33-14c456768743" />
 
-```md
-![Exit analysis](docs/screenshots/exit-analysis.png)
-```
 
 ### Stress Testing / Scenario Queue
 
-If you want to highlight the more advanced workflow, show the stress-testing tab or scenario job flow. Skip this screenshot if you do not want Redis-backed features in the first impression.
+<img width="1550" height="714" alt="image" src="https://github.com/user-attachments/assets/2c125d67-4c4e-40d7-945e-85d7ff652a64" />
 
-```md
-![Stress testing workflow](docs/screenshots/stress-testing.png)
-```
+
+<img width="1551" height="709" alt="image" src="https://github.com/user-attachments/assets/bd2bb28b-8948-4cff-bfbc-2968e032afc3" />
+
 
 ### CLI Workflow
 
-Terminal output from a real run. Use a clean example that shows the project is usable without the UI as well.
+<img width="941" height="708" alt="image" src="https://github.com/user-attachments/assets/b80e5def-04cb-41e6-a4bc-9c06fb6d0856" />
 
-```md
-![CLI workflow](docs/screenshots/cli-workflow.png)
-```
 
 ## What This Project Does
 
