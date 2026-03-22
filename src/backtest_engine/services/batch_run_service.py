@@ -15,6 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
 import sys
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -90,21 +91,34 @@ def _render_progress_bar(
     total: int,
     width: int,
     label: str,
+    start_time: float,
 ) -> None:
     """
-    Prints one in-place progress bar for the batch coordinator.
+    Prints one in-place progress bar with elapsed time, ETA, and speed.
 
     Args:
         current: Number of completed scenarios.
         total: Total scenario count.
         width: Character width of the filled bar.
         label: Short status label for the latest completed scenario.
+        start_time: Unix timestamp when the batch started (from time.monotonic()).
     """
     safe_total = max(total, 1)
     progress = current / safe_total
     filled = int(width * progress)
     bar = "#" * filled + "-" * (width - filled)
-    message = f"\r[Batch] [{bar}] {current}/{total} {label}".rstrip()
+
+    elapsed = time.monotonic() - start_time
+    avg_sec = elapsed / current if current > 0 else 0.0
+    remaining = avg_sec * (safe_total - current)
+
+    def _fmt_t(secs: float) -> str:
+        m, s = divmod(int(secs), 60)
+        return f"{m:02d}:{s:02d}"
+
+    timing = f"[{_fmt_t(elapsed)}<{_fmt_t(remaining)}, {avg_sec:.2f}s/it]"
+    percent = f"{progress:3.0%}"
+    message = f"\r[Batch] {percent}|{bar}| {current}/{total} {label} {timing}".rstrip()
     sys.stdout.write(message)
     sys.stdout.flush()
     if current >= total:
@@ -218,11 +232,12 @@ def run_batch_backtests(
 
     results: List[SingleBatchResult] = []
     progress_width = int(settings.batch_progress_bar_width)
+    start_time = time.monotonic()
 
     if len(scenarios) == 1:
         result = _run_batch_worker(scenarios[0], settings_payload)
         results.append(result)
-        _render_progress_bar(1, 1, progress_width, scenarios[0].legend_label)
+        _render_progress_bar(1, 1, progress_width, scenarios[0].legend_label, start_time)
     else:
         with ProcessPoolExecutor(max_workers=resolved_workers) as executor:
             futures = {
@@ -247,6 +262,7 @@ def run_batch_backtests(
                     len(scenarios),
                     progress_width,
                     scenario.legend_label,
+                    start_time,
                 )
 
     successful_results = [

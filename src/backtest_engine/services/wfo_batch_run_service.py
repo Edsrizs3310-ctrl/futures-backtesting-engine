@@ -16,9 +16,11 @@ import csv
 from datetime import datetime
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.backtest_engine.optimization.wfv_optimizer import WalkForwardOptimizer
@@ -82,13 +84,25 @@ def _render_progress_bar(
     total: int,
     width: int,
     label: str,
+    start_time: float,
 ) -> None:
-    """Prints one in-place progress bar for the WFO batch coordinator."""
+    """Prints one in-place progress bar with elapsed time, ETA, and speed."""
     safe_total = max(total, 1)
     progress = current / safe_total
     filled = int(width * progress)
     bar = "#" * filled + "-" * (width - filled)
-    message = f"\r[WFO Batch] [{bar}] {current}/{total} {label}".rstrip()
+
+    elapsed = time.monotonic() - start_time
+    avg_sec = elapsed / current if current > 0 else 0.0
+    remaining = avg_sec * (safe_total - current)
+
+    def _fmt_t(secs: float) -> str:
+        m, s = divmod(int(secs), 60)
+        return f"{m:02d}:{s:02d}"
+
+    timing = f"[{_fmt_t(elapsed)}<{_fmt_t(remaining)}, {avg_sec:.2f}s/it]"
+    percent = f"{progress:3.0%}"
+    message = f"\r[WFO Batch] {percent}|{bar}| {current}/{total} {label} {timing}".rstrip()
     sys.stdout.write(message)
     sys.stdout.flush()
     if current >= total:
@@ -118,6 +132,9 @@ def _run_wfo_batch_worker(
     )
 
     try:
+        # Suppress Optuna INFO logs (study creation, trial messages) that would
+        # leak through Python's logging system even inside redirect_stderr.
+        logging.disable(logging.WARNING)
         strategy_class = load_strategy_by_id(scenario.strategy_id)
         optimizer = WalkForwardOptimizer(settings=settings)
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -127,6 +144,7 @@ def _run_wfo_batch_worker(
                 print_report=False,
                 show_progress_bar=False,
             )
+        logging.disable(logging.NOTSET)
         text_report = optimizer.format_human_report(report)
         return WfoBatchResult(
             scenario=scenario,
@@ -328,11 +346,12 @@ def run_wfo_batch_backtests(
 
     results: List[WfoBatchResult] = []
     progress_width = int(settings.batch_progress_bar_width)
+    start_time = time.monotonic()
 
     if len(scenarios) == 1:
         result = _run_wfo_batch_worker(scenarios[0], settings_payload)
         results.append(result)
-        _render_progress_bar(1, 1, progress_width, scenarios[0].legend_label)
+        _render_progress_bar(1, 1, progress_width, scenarios[0].legend_label, start_time)
     else:
         with ProcessPoolExecutor(max_workers=resolved_workers) as executor:
             futures = {
@@ -358,6 +377,7 @@ def run_wfo_batch_backtests(
                     len(scenarios),
                     progress_width,
                     scenario.legend_label,
+                    start_time,
                 )
 
     completed_results = [result for result in results if result.status == "completed"]

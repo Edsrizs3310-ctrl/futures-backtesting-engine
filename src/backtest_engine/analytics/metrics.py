@@ -73,16 +73,22 @@ def calc_cagr(total_return: float, years: float) -> float:
 
     Methodology:
         CAGR = (1 + total_return)^(1/years) - 1
-        Floored at 0 to avoid domain errors on negative equity.
+        The geometric root is only valid when (1 + total_return) > 0, which is
+        always true unless the portfolio was fully wiped out (total_return <= -1).
+        No artificial floor: a losing strategy must produce a negative CAGR so
+        that Sharpe / Sortino correctly reflect the loss direction.
 
     Args:
         total_return: Decimal total return.
         years: Elapsed years from calc_years().
 
     Returns:
-        Annualised compound growth rate.
+        Annualised compound growth rate (negative for losing strategies).
     """
-    return max(0.0, 1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
+    base = 1.0 + total_return
+    if years <= 0 or base <= 0.0:
+        return 0.0
+    return base ** (1.0 / years) - 1.0
 
 
 def calc_bars_per_year(n_bars: int, years: float) -> float:
