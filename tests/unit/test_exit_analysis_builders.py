@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from src.backtest_engine.services.artifact_service import ResultBundle
+from src.backtest_engine.runtime.terminal_ui.constants import TITLE_EXIT_VOL_REGIME
 from src.backtest_engine.runtime.terminal_ui.exit_chart_builders import (
     build_exit_holding_time_payload,
     build_exit_mfe_mae_payload,
@@ -217,7 +218,7 @@ def test_exit_vol_regime_payload_returns_empty_state_without_column(
 
     payload = build_exit_vol_regime_payload(bundle, strategy_name="__all__")
 
-    assert payload["title"] == "Avg PnL by Entry Volatility"
+    assert payload["title"] == TITLE_EXIT_VOL_REGIME
     assert payload["categories"] == []
     assert payload["series"] == []
     assert "emptyReason" in payload
