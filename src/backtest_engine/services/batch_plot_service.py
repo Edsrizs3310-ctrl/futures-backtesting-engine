@@ -126,9 +126,9 @@ def show_single_batch_plot(
         item_alpha = 1.0 if is_visible else 0.25
         legend_line.set_alpha(item_alpha)
         legend_text.set_alpha(item_alpha)
-        
+
         # Dynamically rescale the Y-axis based on remaining visible lines
-        chart_ax.relim()
+        chart_ax.relim(visible_only=True)
         chart_ax.autoscale_view()
         fig.canvas.draw_idle()
 
