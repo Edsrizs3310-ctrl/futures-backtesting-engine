@@ -54,8 +54,8 @@ def objective_score(
     max_dd = stats.get("max_drawdown", 0.0)
 
     # ── 1. Hard rejection (Floor) ──────────────────────────────────
-    # Note: Immediate kill (`return -1.0`) was removed. 
-    # Optuna elegantly handles this upstream via `raise optuna.TrialPruned`.
+    if trades < min_trades:
+        return -1.0
 
     # ── 2. Base score (blended risk-adjusted return) ───────────────
     base_score = SHARPE_WEIGHT * sharpe + SORTINO_WEIGHT * sortino
@@ -63,7 +63,8 @@ def objective_score(
     # ── 3. Activity penalty (smooth ramp to target) ────────────────
     #   Returns 1.0 if trades >= target_trades.
     #   Linear ramp from 0 to 1? (trades / target)
-    activity_penalty = min(1.0, trades / target_trades)
+    safe_target_trades = max(1, int(target_trades))
+    activity_penalty = min(1.0, trades / safe_target_trades)
 
     # ── 4. Stability penalty (soft quadratic decay) ────────────────
     #   max_dd comes from PerformanceMetrics as PERCENT (e.g. -25.0).
