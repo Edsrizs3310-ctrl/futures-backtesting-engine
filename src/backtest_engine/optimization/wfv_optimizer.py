@@ -105,6 +105,11 @@ class FoldResult:
         return estimated_dsr(self.is_score, self.n_trials, self.trial_std)
 
     @property
+    def is_failed(self) -> bool:
+        """Treat non-positive IS score as failed optimization quality."""
+        return self.is_score <= 0.0
+
+    @property
     def is_win_rate(self) -> float:
         return float(self.is_stats.get("win_rate", 0.0))
 
@@ -118,7 +123,7 @@ class FoldResult:
         Relative Win Rate drift from IS to OOS.
         > -0.10: normal, -0.10..-0.20: warning, < -0.20: red flag.
         """
-        if self.is_win_rate <= 0.0:
+        if self.is_failed or self.is_win_rate <= 0.0:
             return 0.0
         return (self.oos_win_rate - self.is_win_rate) / self.is_win_rate
 
@@ -128,6 +133,8 @@ class FoldResult:
         Per-trade OOS expected value proxy:
         EV = WR * AvgWin - (1 - WR) * |AvgLoss|
         """
+        if self.is_failed:
+            return 0.0
         wr = self.oos_win_rate
         avg_win = float(self.oos_stats.get("avg_win", 0.0))
         avg_loss_abs = abs(float(self.oos_stats.get("avg_loss", 0.0)))
@@ -189,7 +196,9 @@ class WFVReport:
             )
 
         wr_degradations = [
-            f.win_rate_degradation for f in self.fold_results if f.is_win_rate > 0.0
+            f.win_rate_degradation
+            for f in self.fold_results
+            if not f.is_failed and f.is_win_rate > 0.0
         ]
         if wr_degradations:
             median_wr_degradation = float(np.median(wr_degradations))
@@ -202,13 +211,19 @@ class WFVReport:
                     f"WinRate Drift YELLOW: median IS→OOS degradation {median_wr_degradation:+.1%}"
                 )
 
-            oos_wr_std = float(np.std([f.oos_win_rate for f in self.fold_results]))
+            oos_wr_std = float(
+                np.std([f.oos_win_rate for f in self.fold_results if not f.is_failed])
+            )
             if oos_wr_std > 0.10:
                 self.warnings.append(
                     f"Unstable OOS WinRate: fold std is {oos_wr_std:.1%} (possible regime/overfit mix)."
                 )
 
-        negative_ev_folds = sum(1 for f in self.fold_results if f.oos_expected_value < 0.0)
+        negative_ev_folds = sum(
+            1
+            for f in self.fold_results
+            if not f.is_failed and f.oos_expected_value < 0.0
+        )
         if negative_ev_folds > 0:
             self.warnings.append(
                 f"Negative OOS EV in {negative_ev_folds}/{len(self.fold_results)} folds."
@@ -387,7 +402,7 @@ class WalkForwardOptimizer:
             trial_std = opt_result.get("trial_std", 0.0)
 
             # 2. Evaluate (OOS) — dataset injected
-            if opt_result["best_score"] < 0.0 or not opt_result["best_params"]:
+            if opt_result["best_score"] <= 0.0 or not opt_result["best_params"]:
                 eval_result = {"score": -1.0, "stats": {}}
             else:
                 eval_result = self.base_optimizer.evaluate_on_slice(
@@ -519,9 +534,12 @@ class WalkForwardOptimizer:
 
             dd_val = f.oos_stats.get("max_drawdown", 0)
             dd_str = f"{dd_val:.1f}"
-            is_wr = f"{f.is_win_rate:.0%}"
-            oos_wr = f"{f.oos_win_rate:.0%}"
-            wr_delta = f"{f.win_rate_degradation:+.0%}"
+            if f.is_failed:
+                is_wr, oos_wr, wr_delta = "n/a", "n/a", "n/a"
+            else:
+                is_wr = f"{f.is_win_rate:.0%}"
+                oos_wr = f"{f.oos_win_rate:.0%}"
+                wr_delta = f"{f.win_rate_degradation:+.0%}"
 
             lines.append(
                 f"{_col(str(f.fold_id), 4)} | "
