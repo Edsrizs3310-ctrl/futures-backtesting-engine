@@ -15,14 +15,16 @@ import time
 import pandas as pd
 import numpy as np
 import math
-import optuna
-import optuna.logging
+import importlib
 
 from ..settings import BacktestSettings
 from .fold_generator import PurgedFoldGenerator
 from .optimizer import OptunaOptimizer
 from src.data.data_lake import DataLake
 
+# Avoid static import resolution issues in type checkers when optional
+# runtime environments differ from IDE analysis environments.
+optuna = importlib.import_module("optuna")
 
 # Suppress Optuna logging to warnings only
 optuna.logging.set_verbosity(optuna.logging.WARNING)
