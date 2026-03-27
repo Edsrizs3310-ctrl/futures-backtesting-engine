@@ -38,7 +38,7 @@ MODES
   python run.py --download 6E
 
   ── Single backtest ───────────────────────────────────────────────────────
-  python run.py --backtest --strategy ict_ob --symbol YM --tf 30m --dashboard
+  python run.py --backtest --strategy ict_daily_fvg --symbol NQ --tf 30m --dashboard
   python run.py --backtest --strategy ict_ob --symbol NQ --tf 30m --dashboard
 
   ── Walk-Forward Optimization (single) ────────────────────────────────────
@@ -49,7 +49,7 @@ MODES
   python run.py --portfolio-backtest --portfolio-config path/to/config.yaml
 
   ── Batch: one strategy, many symbols / timeframes ────────────────────────
-  python run.py batch --strategies three_bar_mr --symbol ES NQ RTY YM CL GC SI NG --tf 5m 30m 1h
+  python run.py batch --strategies ict_daily_fvg --symbol ES NQ RTY YM CL GC SI NG --tf 30m
   python run.py batch --strategies sma_pullback ict_ob --symbol ES --tf 1h 30m
 
   ── WFO-Batch: full walk-forward sweep across scenarios ───────────────────
