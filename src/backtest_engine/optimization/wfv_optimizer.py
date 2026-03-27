@@ -88,18 +88,48 @@ class FoldResult:
 
     # Metrics
     oos_stats: Dict[str, Any]
+    is_stats: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def degradation(self) -> float:
         """Percentage drop from IS to OOS."""
-        if self.is_score <= 1e-6:
-            return 0.0
+        if self.is_score <= 0.0:
+            return -1.0
         return (self.oos_score - self.is_score) / self.is_score
 
     @property
     def dsr_probability(self) -> float:
         """Probability this fold's success isn't luck."""
         return estimated_dsr(self.is_score, self.n_trials, self.trial_std)
+
+    @property
+    def is_win_rate(self) -> float:
+        return float(self.is_stats.get("win_rate", 0.0))
+
+    @property
+    def oos_win_rate(self) -> float:
+        return float(self.oos_stats.get("win_rate", 0.0))
+
+    @property
+    def win_rate_degradation(self) -> float:
+        """
+        Relative Win Rate drift from IS to OOS.
+        > -0.10: normal, -0.10..-0.20: warning, < -0.20: red flag.
+        """
+        if self.is_win_rate <= 0.0:
+            return 0.0
+        return (self.oos_win_rate - self.is_win_rate) / self.is_win_rate
+
+    @property
+    def oos_expected_value(self) -> float:
+        """
+        Per-trade OOS expected value proxy:
+        EV = WR * AvgWin - (1 - WR) * |AvgLoss|
+        """
+        wr = self.oos_win_rate
+        avg_win = float(self.oos_stats.get("avg_win", 0.0))
+        avg_loss_abs = abs(float(self.oos_stats.get("avg_loss", 0.0)))
+        return wr * avg_win - (1 - wr) * avg_loss_abs
 
 
 @dataclass
@@ -154,6 +184,32 @@ class WFVReport:
             self.warnings.append(
                 f"Low Significance: DSR {self.avg_dsr:.2f} implies results "
                 f"indistinguishable from noise."
+            )
+
+        wr_degradations = [
+            f.win_rate_degradation for f in self.fold_results if f.is_win_rate > 0.0
+        ]
+        if wr_degradations:
+            median_wr_degradation = float(np.median(wr_degradations))
+            if median_wr_degradation < -0.20:
+                self.warnings.append(
+                    f"WinRate Drift RED: median IS→OOS degradation {median_wr_degradation:+.1%}"
+                )
+            elif median_wr_degradation < -0.10:
+                self.warnings.append(
+                    f"WinRate Drift YELLOW: median IS→OOS degradation {median_wr_degradation:+.1%}"
+                )
+
+            oos_wr_std = float(np.std([f.oos_win_rate for f in self.fold_results]))
+            if oos_wr_std > 0.10:
+                self.warnings.append(
+                    f"Unstable OOS WinRate: fold std is {oos_wr_std:.1%} (possible regime/overfit mix)."
+                )
+
+        negative_ev_folds = sum(1 for f in self.fold_results if f.oos_expected_value < 0.0)
+        if negative_ev_folds > 0:
+            self.warnings.append(
+                f"Negative OOS EV in {negative_ev_folds}/{len(self.fold_results)} folds."
             )
 
         if (
@@ -326,16 +382,19 @@ class WalkForwardOptimizer:
 
             n_trials_actual = opt_result.get("n_trials", n_trials)
             total_trials += n_trials_actual
-            trial_std = opt_result.get("trial_std", 0.1)
+            trial_std = opt_result.get("trial_std", 0.0)
 
             # 2. Evaluate (OOS) — dataset injected
-            eval_result = self.base_optimizer.evaluate_on_slice(
-                strategy_class=strategy_class,
-                params=opt_result["best_params"],
-                start_date=test_start,
-                end_date=test_end,
-                data=test_slice,
-            )
+            if opt_result["best_score"] < 0.0 or not opt_result["best_params"]:
+                eval_result = {"score": -1.0, "stats": {}}
+            else:
+                eval_result = self.base_optimizer.evaluate_on_slice(
+                    strategy_class=strategy_class,
+                    params=opt_result["best_params"],
+                    start_date=test_start,
+                    end_date=test_end,
+                    data=test_slice,
+                )
 
             fold_results.append(
                 FoldResult(
@@ -349,6 +408,7 @@ class WalkForwardOptimizer:
                     oos_score=eval_result["score"],
                     n_trials=n_trials_actual,
                     trial_std=trial_std,
+                    is_stats=opt_result.get("best_stats", {}),
                     oos_stats=eval_result["stats"],
                 )
             )
@@ -440,6 +500,9 @@ class WalkForwardOptimizer:
             f"{_col('IS Score', 8)} | "
             f"{_col('OOS Score', 9)} | "
             f"{_col('Decay', 7)} | "
+            f"{_col('WR IS', 6)} | "
+            f"{_col('WR OOS', 7)} | "
+            f"{_col('WR Δ', 7)} | "
             f"{_col('Visual', 12)} | "
             f"{_col('DD%', 6)}"
         )
@@ -454,6 +517,9 @@ class WalkForwardOptimizer:
 
             dd_val = f.oos_stats.get("max_drawdown", 0)
             dd_str = f"{dd_val:.1f}"
+            is_wr = f"{f.is_win_rate:.0%}"
+            oos_wr = f"{f.oos_win_rate:.0%}"
+            wr_delta = f"{f.win_rate_degradation:+.0%}"
 
             lines.append(
                 f"{_col(str(f.fold_id), 4)} | "
@@ -461,6 +527,9 @@ class WalkForwardOptimizer:
                 f"{_col(f'{f.is_score:.2f}', 8)} | "
                 f"{_col(f'{f.oos_score:.2f}', 9)} | "
                 f"{_col(decay_str, 7)} | "
+                f"{_col(is_wr, 6)} | "
+                f"{_col(oos_wr, 7)} | "
+                f"{_col(wr_delta, 7)} | "
                 f"{_col(_bar(f.oos_score, 1.5), 12)} | "
                 f"{_col(dd_str, 6)}"
             )

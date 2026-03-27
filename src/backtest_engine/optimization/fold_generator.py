@@ -52,6 +52,11 @@ class PurgedFoldGenerator:
         
         # Determine sizes
         fold_size = int(n_samples * self.test_size)
+        if fold_size <= 0:
+            raise ValueError(
+                f"Fold size became zero (n_samples={n_samples}, test_size={self.test_size}). "
+                "Increase test_size or use more data."
+            )
         total_test_size = fold_size * self.n_folds
         
         # Minimum training size logic
@@ -76,8 +81,8 @@ class PurgedFoldGenerator:
             if test_end <= test_start:
                 break
                 
-            # Train End is BEFORE Purge+Embargo
-            train_end_raw = test_start - self.purge_bars
+            # Train ends before purge + embargo gap that precedes each test fold.
+            train_end_raw = test_start - self.purge_bars - self.embargo_bars
             
             if train_end_raw <= 0:
                 continue # Cannot train
@@ -92,11 +97,9 @@ class PurgedFoldGenerator:
                 start_idx = max(0, train_end_raw - initial_train_size)
                 train_idx = indices[start_idx:train_end_raw]
                 
-            # Embargo is usually right BEFORE the test set, or AFTER?
-            # Standard: [Train] [Purge] [Test] [Embargo]
-            # Since backtrader tests sequentially, embargo is skipped.
-            # But here test_idx is strict.
-            test_start_actual = test_start + self.embargo_bars
+            # Test window must remain untouched; embargo is applied to training
+            # boundary (see train_end_raw) to avoid eating OOS bars.
+            test_start_actual = test_start
             if test_start_actual >= test_end:
                  continue # Embargo swallowed the whole test fold
                  

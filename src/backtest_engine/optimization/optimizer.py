@@ -158,17 +158,28 @@ class OptunaOptimizer:
                     "max_drawdown": 0.0,
                     "sortino_ratio": 0.0,
                     "calmar_ratio": 0.0,
+                    "win_rate": 0.0,
+                    "avg_win": 0.0,
+                    "avg_loss": 0.0,
                 },
                 "engine": engine,
             }
 
-        # Normalize metric keys to match objective.py expectations
+        raw_max_dd = metrics.get("Max Drawdown", 0.0)
+        # Normalize metric keys to match objective.py expectations.
+        # Some metric providers emit drawdown as a fraction (-0.25), others as
+        # percent (-25.0). Keep a single percent representation for objective.
+        max_dd_pct = raw_max_dd * 100 if abs(raw_max_dd) <= 1.0 else raw_max_dd
+
         stats = {
             "total_trades": metrics.get("Total Trades", 0),
             "sharpe_ratio": metrics.get("Sharpe Ratio", 0.0),
             "sortino_ratio": metrics.get("Sortino Ratio", 0.0),
             "calmar_ratio": metrics.get("Calmar Ratio", 0.0),
-            "max_drawdown": metrics.get("Max Drawdown", 0.0) * 100,  # fraction → %
+            "max_drawdown": max_dd_pct,
+            "win_rate": metrics.get("Win Rate", 0.0),
+            "avg_win": metrics.get("Avg Win", 0.0),
+            "avg_loss": metrics.get("Avg Loss", 0.0),
         }
 
         return {"stats": stats, "engine": engine}
@@ -335,6 +346,7 @@ class OptunaOptimizer:
                 step_callback=prune_callback
             )
             stats = result["stats"]
+            trial.set_user_attr("stats", stats)
 
             min_trades = self.settings.wfo_prune_min_trades
 
@@ -373,6 +385,7 @@ class OptunaOptimizer:
             "best_score": study.best_trial.value,
             "n_trials": len(study.trials),
             "trial_std": trial_std,
+            "best_stats": study.best_trial.user_attrs.get("stats", {}),
         }
 
     def evaluate_on_slice(
