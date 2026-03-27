@@ -59,7 +59,7 @@ class BacktestSettings(BaseSettings):
     bar_size: float = 0.0         # Threshold for volume / range bar types
 
     # ── Portfolio & execution ──────────────────────────────────────────────────
-    initial_capital: float = 100_000.0
+    initial_capital: float = 1_000_000.0
     risk_free_rate: float = 0.02
     commission_rate: float = 2.5      # Per contract, in dollars
     fixed_qty: int = 1                # Default number of contracts per signal (for single strategy mode)

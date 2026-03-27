@@ -41,8 +41,8 @@ strategies:
   - strategy: three_bar_mr # <-- This strategy is really good! Need to check optimization.
     symbols:
       - GC
-    weight: 0.50
-    duty_cycle: 1.0               
+    weight: 0.20
+    duty_cycle: 0.2183              
     timeframe: 5m
     params: {}
     
@@ -52,8 +52,8 @@ strategies:
   - strategy: three_bar_mr
     symbols:
       - NQ
-    weight: 0.50
-    duty_cycle: 1.0               
+    weight: 0.80
+    duty_cycle: 0.051            
     timeframe: 1h
     params: {}
 

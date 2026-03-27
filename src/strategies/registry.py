@@ -18,13 +18,6 @@ STRATEGIES = {
         "name": "IctOrderBlockStrategy",
         "description": "Popular Media / ICT",
     },
-    "ict_daily_fvg": {
-        "class_path": (
-            "src.strategies.ict_daily_fvg_reversal:IctDailyFvgReversalStrategy"
-        ),
-        "name": "IctDailyFvgReversalStrategy",
-        "description": "ICT Daily FVG + M30 reversal",
-    },
     "sma_pullback": {
         "class_path": "src.strategies.sma_pullback:SmaPullbackStrategy",
         "name": "SmaPullbackStrategy",
@@ -41,7 +34,6 @@ STRATEGIES = {
 
 STRATEGY_ALIASES = {
     "ict_order_block": "ict_ob",
-    "ict_daily_fvg_reversal": "ict_daily_fvg",
 }
 
 
