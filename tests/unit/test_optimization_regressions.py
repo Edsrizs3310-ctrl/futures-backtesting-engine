@@ -311,3 +311,107 @@ def test_wfv_report_adds_warning_on_large_win_rate_drift() -> None:
     report.compute()
 
     assert any("WinRate Drift" in warning for warning in report.warnings)
+
+
+def test_wfv_report_requires_consecutive_profitable_folds_for_pass() -> None:
+    """
+    PASS should fail if profitable folds are not consecutive under consistency gates.
+    """
+    folds = [
+        FoldResult(
+            fold_id=1,
+            train_start="2024-01-01",
+            train_end="2024-02-01",
+            test_start="2024-02-02",
+            test_end="2024-03-01",
+            best_params={},
+            is_score=1.0,
+            oos_score=0.5,
+            n_trials=20,
+            trial_std=0.1,
+            oos_stats={"sharpe_ratio": 1.0},
+        ),
+        FoldResult(
+            fold_id=2,
+            train_start="2024-02-01",
+            train_end="2024-03-01",
+            test_start="2024-03-02",
+            test_end="2024-04-01",
+            best_params={},
+            is_score=1.0,
+            oos_score=-0.2,
+            n_trials=20,
+            trial_std=0.1,
+            oos_stats={"sharpe_ratio": -0.3},
+        ),
+        FoldResult(
+            fold_id=3,
+            train_start="2024-03-01",
+            train_end="2024-04-01",
+            test_start="2024-04-02",
+            test_end="2024-05-01",
+            best_params={},
+            is_score=1.0,
+            oos_score=0.4,
+            n_trials=20,
+            trial_std=0.1,
+            oos_stats={"sharpe_ratio": 1.1},
+        ),
+    ]
+    report = WFVReport(
+        symbol="ES",
+        strategy_name="S",
+        n_folds=3,
+        fold_results=folds,
+        pass_min_profitable_folds=2,
+        pass_min_consecutive_profitable_folds=2,
+    )
+    report.compute()
+
+    assert report.verdict != "PASS"
+
+
+def test_wfv_report_applies_per_fold_sharpe_threshold() -> None:
+    """
+    Fold quality count must respect configured minimum Sharpe threshold.
+    """
+    folds = [
+        FoldResult(
+            fold_id=1,
+            train_start="2024-01-01",
+            train_end="2024-02-01",
+            test_start="2024-02-02",
+            test_end="2024-03-01",
+            best_params={},
+            is_score=1.0,
+            oos_score=0.6,
+            n_trials=20,
+            trial_std=0.1,
+            oos_stats={"sharpe_ratio": 0.2},
+        ),
+        FoldResult(
+            fold_id=2,
+            train_start="2024-02-01",
+            train_end="2024-03-01",
+            test_start="2024-03-02",
+            test_end="2024-04-01",
+            best_params={},
+            is_score=1.0,
+            oos_score=0.5,
+            n_trials=20,
+            trial_std=0.1,
+            oos_stats={"sharpe_ratio": 0.8},
+        ),
+    ]
+    report = WFVReport(
+        symbol="ES",
+        strategy_name="S",
+        n_folds=2,
+        fold_results=folds,
+        pass_min_profitable_folds=2,
+        warn_min_profitable_folds=2,
+        min_sharpe_per_fold=0.5,
+    )
+    report.compute()
+
+    assert report.verdict == "FAIL"
