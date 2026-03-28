@@ -159,6 +159,11 @@ class WFVReport:
     candidate_params: Dict[str, Any] = field(default_factory=dict)
     verdict: str = "FAIL"
     warnings: List[str] = field(default_factory=list)
+    pass_min_profitable_folds: int = 3
+    warn_min_profitable_folds: int = 2
+    pass_min_consecutive_profitable_folds: int = 2
+    warn_min_consecutive_profitable_folds: int = 1
+    min_sharpe_per_fold: float = 0.0
 
     # Computational Profiling
     total_wfo_time_sec: float = 0.0
@@ -182,7 +187,10 @@ class WFVReport:
 
     def _analyze_robustness(self):
         """Apply Senior Quant logic to determine verdict."""
-        n_profitable = sum(1 for f in self.fold_results if f.oos_score > 0)
+        n_profitable = self._count_quality_profitable_folds(self.min_sharpe_per_fold)
+        max_consecutive_profitable = self._max_consecutive_quality_profitable_folds(
+            self.min_sharpe_per_fold
+        )
 
         if self.median_degradation < -0.50:
             self.warnings.append(
@@ -230,15 +238,45 @@ class WFVReport:
             )
 
         if (
-            n_profitable >= 3
+            n_profitable >= self.pass_min_profitable_folds
+            and max_consecutive_profitable >= self.pass_min_consecutive_profitable_folds
             and self.median_degradation > -0.40
             and self.avg_dsr > 0.6
         ):
             self.verdict = "PASS"
-        elif n_profitable >= 2 and self.median_degradation > -0.60:
+        elif (
+            n_profitable >= self.warn_min_profitable_folds
+            and max_consecutive_profitable >= self.warn_min_consecutive_profitable_folds
+            and self.median_degradation > -0.60
+        ):
             self.verdict = "WARNING"
         else:
             self.verdict = "FAIL"
+
+    def _count_quality_profitable_folds(self, min_sharpe: float) -> int:
+        """Count OOS-positive folds that also satisfy minimum Sharpe quality."""
+        return sum(
+            1
+            for fold in self.fold_results
+            if fold.oos_score > 0.0
+            and float(fold.oos_stats.get("sharpe_ratio", 0.0)) >= min_sharpe
+        )
+
+    def _max_consecutive_quality_profitable_folds(self, min_sharpe: float) -> int:
+        """Return the longest streak of OOS-positive, quality-qualified folds."""
+        max_streak = 0
+        current_streak = 0
+        for fold in self.fold_results:
+            is_quality_profitable = (
+                fold.oos_score > 0.0
+                and float(fold.oos_stats.get("sharpe_ratio", 0.0)) >= min_sharpe
+            )
+            if is_quality_profitable:
+                current_streak += 1
+                max_streak = max(max_streak, current_streak)
+                continue
+            current_streak = 0
+        return max_streak
 
     def _select_candidate_params(self) -> None:
         """Median/Mode of robust folds."""
@@ -441,7 +479,19 @@ class WalkForwardOptimizer:
         total_time = wfo_end_time - wfo_start_time
 
         report = WFVReport(
-            symbol, strategy_class.__name__, len(folds), fold_results
+            symbol=symbol,
+            strategy_name=strategy_class.__name__,
+            n_folds=len(folds),
+            fold_results=fold_results,
+            pass_min_profitable_folds=self.settings.wfo_pass_min_profitable_folds,
+            warn_min_profitable_folds=self.settings.wfo_warn_min_profitable_folds,
+            pass_min_consecutive_profitable_folds=(
+                self.settings.wfo_pass_min_consecutive_profitable_folds
+            ),
+            warn_min_consecutive_profitable_folds=(
+                self.settings.wfo_warn_min_consecutive_profitable_folds
+            ),
+            min_sharpe_per_fold=self.settings.wfo_min_sharpe_per_fold,
         )
         report.total_wfo_time_sec = total_time
         report.avg_fold_time_sec = total_time / len(folds) if folds else 0.0
