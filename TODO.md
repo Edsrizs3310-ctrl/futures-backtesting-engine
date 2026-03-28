@@ -11,3 +11,4 @@
 - [ ] Add metric to WFO: Win Rate IS vs OOS
 - [ ] Add Shuffled/Bootstrap test for WFO.
 - [ ] Add regime analysis in WFO
+- [ ] In terminal UI, vol after entry, change to proper vol drag analysis.
