@@ -217,7 +217,7 @@ def test_exit_vol_regime_payload_returns_empty_state_without_column(
 
     payload = build_exit_vol_regime_payload(bundle, strategy_name="__all__")
 
-    assert payload["title"] == "Avg PnL by Entry Volatility"
+    assert payload["title"] == "Avg PnL by Vol after Entry"
     assert payload["categories"] == []
     assert payload["series"] == []
     assert "emptyReason" in payload

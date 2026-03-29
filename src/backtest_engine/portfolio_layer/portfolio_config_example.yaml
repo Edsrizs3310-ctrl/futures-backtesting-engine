@@ -38,7 +38,7 @@ portfolio:
   max_contracts_per_slot: null         # Optional hard cap on contracts per (slot, symbol)
 
 strategies:
-  - strategy: three_bar_mr # <-- This strategy is really good! Need to check optimization.
+  - strategy: three_bar_mr
     symbols:
       - GC
     weight: 0.20

@@ -29,13 +29,14 @@ class ValidationResult:
     missing_bars: int
     ohlc_violations: int
     volume_anomalies: int
+    price_anomalies: int
     quality_score: float
     issues: List[str]
 
     @property
     def is_valid(self) -> bool:
         """Returns True when the dataset passes the quality threshold."""
-        return self.quality_score >= 0.95
+        return self.quality_score >= 0.95 and self.price_anomalies == 0
 
 
 class DataValidator:
@@ -56,6 +57,13 @@ class DataValidator:
         "5m": 30,
         "30m": 180,
         "1h": 180,
+    }
+
+    ROLL_JUMP_THRESHOLDS = {
+        "1m": 0.05,
+        "5m": 0.05,
+        "30m": 0.08,
+        "1h": 0.08,
     }
 
     def __init__(self, volume_zscore_threshold: float = 5.0) -> None:
@@ -94,6 +102,7 @@ class DataValidator:
                 missing_bars=0,
                 ohlc_violations=0,
                 volume_anomalies=0,
+                price_anomalies=0,
                 quality_score=0.0,
                 issues=["Empty DataFrame"],
             )
@@ -110,7 +119,15 @@ class DataValidator:
         volume_anomalies, volume_issues = self._check_volume_anomalies(df)
         issues.extend(volume_issues)
 
-        penalty = (missing_bars + ohlc_violations * 10 + volume_anomalies) / max(total_bars, 1)
+        price_anomalies, price_issues = self._check_price_continuity(df, timeframe)
+        issues.extend(price_issues)
+
+        penalty = (
+            missing_bars
+            + ohlc_violations * 10
+            + volume_anomalies
+            + price_anomalies * 25
+        ) / max(total_bars, 1)
         quality_score = max(0.0, min(1.0, 1.0 - penalty))
 
         return ValidationResult(
@@ -120,6 +137,7 @@ class DataValidator:
             missing_bars=missing_bars,
             ohlc_violations=ohlc_violations,
             volume_anomalies=volume_anomalies,
+            price_anomalies=price_anomalies,
             quality_score=quality_score,
             issues=issues,
         )
@@ -167,6 +185,7 @@ class DataValidator:
                         missing_bars=0,
                         ohlc_violations=0,
                         volume_anomalies=0,
+                        price_anomalies=0,
                         quality_score=0.0,
                         issues=[f"Failed to read cache file: {exc}"],
                     )
@@ -288,6 +307,60 @@ class DataValidator:
 
         return anomalies, issues
 
+    def _check_price_continuity(self, df: pd.DataFrame, timeframe: str) -> Tuple[int, List[str]]:
+        """
+        Checks continuous-series integrity beyond basic OHLC geometry.
+
+        Methodology:
+            Continuous futures can pass gap/OHLC checks while still being
+            economically broken at contract splice points. This validator
+            flags two high-signal failure modes:
+
+            1. ``average`` outside the candle range, which often means OHLC was
+               shifted during back-adjustment while ``average`` remained raw.
+            2. Large close-to-close jumps exactly where the ``contract`` column
+               changes, which points to a failed rollover adjustment.
+        """
+        issues: List[str] = []
+        anomalies = 0
+
+        normalized_columns = {str(column).lower(): column for column in df.columns}
+        required_ohlc = {"high", "low", "close"}
+        if not required_ohlc.issubset(normalized_columns):
+            return 0, []
+
+        high_col = normalized_columns["high"]
+        low_col = normalized_columns["low"]
+        close_col = normalized_columns["close"]
+
+        average_col = normalized_columns.get("average")
+        if average_col is not None:
+            average_outside = (df[average_col] < df[low_col]) | (df[average_col] > df[high_col])
+            average_violations = int(average_outside.sum())
+            if average_violations > 0:
+                anomalies += average_violations
+                issues.append(f"Average outside candle range: {average_violations}")
+
+        contract_col = normalized_columns.get("contract")
+        if contract_col is None or len(df) < 2:
+            return anomalies, issues
+
+        roll_jump_threshold = self.ROLL_JUMP_THRESHOLDS.get(timeframe, 0.08)
+        close_returns = df[close_col].pct_change().abs()
+        contract_change = df[contract_col].astype(str).ne(df[contract_col].astype(str).shift())
+        suspicious_rolls = close_returns[contract_change & (close_returns > roll_jump_threshold)].dropna()
+
+        roll_count = int(len(suspicious_rolls))
+        if roll_count > 0:
+            anomalies += roll_count
+            issues.append(
+                f"Suspicious roll jumps (> {roll_jump_threshold:.0%} close-to-close): {roll_count}"
+            )
+            for timestamp, change in suspicious_rolls.head(3).items():
+                issues.append(f"Roll jump at {timestamp}: {change:.2%}")
+
+        return anomalies, issues
+
     def generate_report(self, results: List[ValidationResult]) -> str:
         """
         Generates a human-readable validation report.
@@ -326,7 +399,8 @@ class DataValidator:
             lines.append(
                 f"  Missing: {result.missing_bars}, "
                 f"OHLC Violations: {result.ohlc_violations}, "
-                f"Volume Anomalies: {result.volume_anomalies}"
+                f"Volume Anomalies: {result.volume_anomalies}, "
+                f"Price Anomalies: {result.price_anomalies}"
             )
 
             if result.issues:

@@ -66,7 +66,7 @@ class IBFetcherHistoryMixin:
         total_fetched = 0
         chunk_days = 7
         current_contract: Optional[Future] = None
-        next_chunk_first_open: Optional[float] = None
+        next_chunk_first_open_raw: Optional[float] = None
         cumulative_adj = 0.0
 
         print(f"[FETCH] {timeframe.file_suffix}: {start_date.date()} -> {stop_date.date()}")
@@ -89,10 +89,10 @@ class IBFetcherHistoryMixin:
                     if (
                         previous_contract is not None
                         and contract.localSymbol != previous_contract.localSymbol
-                        and next_chunk_first_open is not None
+                        and next_chunk_first_open_raw is not None
                     ):
-                        old_close = df_chunk["close"].iloc[-1]
-                        gap = next_chunk_first_open - old_close
+                        old_close_raw = float(df_chunk["close"].iloc[-1])
+                        gap = next_chunk_first_open_raw - old_close_raw
                         cumulative_adj += gap
                         print(
                             f" [ADJUST] Roll {contract.localSymbol}->{previous_contract.localSymbol} "
@@ -100,11 +100,13 @@ class IBFetcherHistoryMixin:
                         )
 
                     if cumulative_adj != 0.0:
-                        for column in ["open", "high", "low", "close"]:
+                        for column in ["open", "high", "low", "close", "average"]:
+                            if column not in df_chunk.columns:
+                                continue
                             df_chunk[column] += cumulative_adj
 
                     current_contract = contract
-                    next_chunk_first_open = float(df_chunk["open"].iloc[0])
+                    next_chunk_first_open_raw = float(df_chunk["open"].iloc[0] - cumulative_adj)
                     df_chunk["contract"] = contract.localSymbol
 
                     if df_chunk.index.tz is not None:

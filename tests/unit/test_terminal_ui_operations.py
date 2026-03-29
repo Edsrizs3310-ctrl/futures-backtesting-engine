@@ -209,7 +209,7 @@ def test_stress_testing_panel_renders_launcher_and_multiple_active_jobs(
     assert "scenario-job-running" in response.text
     assert "scenario-job-queued" in response.text
     assert "scenario-job-completed" in response.text
-    assert "Simulation Backlog" in response.text
+    assert "Coming Soon" in response.text
 
 
 def test_queue_status_only_advertises_publicly_queueable_job_types() -> None:

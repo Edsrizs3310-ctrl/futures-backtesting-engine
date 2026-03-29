@@ -1,5 +1,7 @@
 # Backtesting Platform
 
+![CI](https://github.com/DanRedelien/futures-backtesting-engine/actions/workflows/ci.yml/badge.svg)
+
 Futures-focused research platform for:
 
 - single-strategy backtests
