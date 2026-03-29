@@ -1,6 +1,6 @@
 # Backtesting Platform
 
-![CI](https://github.com/DanRedelien/futures-backtesting-engine/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/DanRedelien/futures-backtesting-engine_private/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DanRedelien/futures-backtesting-engine_private/actions/workflows/ci.yml)
 
 Futures-focused research platform for:
 
