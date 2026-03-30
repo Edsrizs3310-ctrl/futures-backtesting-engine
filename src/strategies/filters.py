@@ -12,12 +12,20 @@ TrendFilter             — blocks mean-reversion entries during strong trends.
 ADFFilter               — verifies stationarity of any price / spread series.
 KalmanBeta              — Numba-compiled dynamic hedge-ratio estimator.
 HalfLifeFilter          — estimates OU mean-reversion speed parameter.
+
+Shared helpers (no separate class)
+─────────────────────────────────
+apply_wfo_dataclass_overrides — merge WFO trial keys from engine.settings into a config dataclass.
+wilder_atr                     — true range + Wilder EWM average (same as most strategies’ ATR).
+hour_of_day_mask               — boolean mask for a simple [start_hour, end_hour) hour window.
+gate_trade_direction           — apply "both" / "long" / "short" to long/short booleans.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -85,6 +93,89 @@ def _kalman_beta_loop(
         beta_arr[t] = b
 
     return beta_arr
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Shared helpers (vectorised indicators & config)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def apply_wfo_dataclass_overrides(engine: Any, cfg: Any, prefix: str) -> None:
+    """
+    Merge optional Walk-Forward Optimisation parameters from ``engine.settings``.
+
+    WFO injects keys like ``{prefix}_{field_name}``; when present they override
+    the dataclass defaults. Mutates ``cfg`` in place.
+    """
+    for field in dataclasses.fields(cfg):
+        wfo_key = f"{prefix}_{field.name}"
+        if hasattr(engine.settings, wfo_key):
+            setattr(cfg, field.name, getattr(engine.settings, wfo_key))
+
+
+def wilder_atr(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    span: int,
+) -> pd.Series:
+    """
+    Average True Range using Wilder-style smoothing (``ewm(span=..., adjust=False)``).
+
+    True range is the bar-wise max of high-low, |high-prev_close|, |low-prev_close|.
+    """
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(span=span, adjust=False).mean()
+
+
+def hour_of_day_mask(
+    index: pd.Index,
+    start_h: int,
+    end_h: int,
+    enabled: bool,
+) -> np.ndarray:
+    """
+    Boolean mask for bars whose clock hour lies in ``[start_h, end_h)``, or
+    wraps midnight when ``start_h > end_h``.
+    """
+    if not enabled:
+        return np.ones(len(index), dtype=bool)
+    dt = pd.DatetimeIndex(pd.to_datetime(index, utc=False))
+    h = dt.hour.to_numpy()
+    if start_h <= end_h:
+        return (h >= start_h) & (h < end_h)
+    return (h >= start_h) | (h < end_h)
+
+
+def gate_trade_direction(
+    trade_direction: str,
+    long_ok: bool,
+    short_ok: bool,
+) -> Tuple[bool, bool]:
+    """
+    Restrict long/short entry flags from a ``trade_direction`` setting.
+
+    Args:
+        trade_direction: "both" | "long" | "short" (case-insensitive).
+        long_ok: Unchecked long entry availability.
+        short_ok: Unchecked short entry availability.
+
+    Returns:
+        (long_ok_gated, short_ok_gated).
+    """
+    d = (trade_direction or "both").strip().lower()
+    if d == "long":
+        return long_ok, False
+    if d == "short":
+        return False, short_ok
+    return long_ok, short_ok
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -221,6 +312,200 @@ class TrendFilter:
     def as_series(self) -> pd.Series:
         """Returns raw T-statistic Series for inspection."""
         return self._t_stat
+
+
+class ShockFilter:
+    """
+    Blocks entries after abnormally violent bars and opening gaps.
+
+    Methodology:
+        Uses prior-bar ATR as a stable volatility yardstick and rejects signal
+        bars whose gap, total range, or close-to-close move is far larger than
+        normal. This is intentionally a soft "do not touch panic bars" filter,
+        not a full volatility-regime model.
+    """
+
+    def __init__(
+        self,
+        open_: pd.Series,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        atr_window: int = 14,
+        max_gap_atr: float = 1.0,
+        max_range_atr: float = 2.5,
+        max_close_change_atr: float = 1.75,
+    ) -> None:
+        """
+        Args:
+            open_: Open price Series indexed by bar timestamp.
+            high: High price Series indexed by bar timestamp.
+            low: Low price Series indexed by bar timestamp.
+            close: Close price Series indexed by bar timestamp.
+            atr_window: ATR lookback used as the trailing volatility baseline.
+            max_gap_atr: Maximum allowed |open - prev_close| in ATR units.
+            max_range_atr: Maximum allowed intrabar range in ATR units.
+            max_close_change_atr: Maximum allowed |close - prev_close| in ATR units.
+        """
+        atr_ref = wilder_atr(high, low, close, atr_window).shift(1)
+        prev_close = close.shift(1)
+
+        gap_atr = (open_ - prev_close).abs() / atr_ref
+        range_atr = (high - low).abs() / atr_ref
+        close_change_atr = (close - prev_close).abs() / atr_ref
+
+        allowed = (
+            (gap_atr <= max_gap_atr)
+            & (range_atr <= max_range_atr)
+            & (close_change_atr <= max_close_change_atr)
+        )
+        allowed = allowed.where(atr_ref.notna(), True)
+
+        self._allowed: pd.Series = allowed.fillna(True)
+        self._gap_atr: pd.Series = gap_atr
+        self._range_atr: pd.Series = range_atr
+        self._close_change_atr: pd.Series = close_change_atr
+
+    def is_allowed(self, timestamp) -> bool:
+        """
+        Returns True when the current bar is not an obvious shock bar.
+
+        Args:
+            timestamp: Current bar index value.
+
+        Returns:
+            True if gap, range, and close-change all remain within ATR bounds.
+        """
+        try:
+            return bool(self._allowed.at[timestamp])
+        except KeyError:
+            return True
+
+    def as_series(self) -> pd.Series:
+        """Returns the boolean allow/block mask."""
+        return self._allowed
+
+    def diagnostics(self) -> pd.DataFrame:
+        """Returns ATR-normalised shock diagnostics for plotting or debugging."""
+        return pd.DataFrame(
+            {
+                "gap_atr": self._gap_atr,
+                "range_atr": self._range_atr,
+                "close_change_atr": self._close_change_atr,
+                "allowed": self._allowed,
+            }
+        )
+
+
+class AtrStretchFilter:
+    """
+    Blocks entries when price is already too far from its local baseline.
+
+    Methodology:
+        Computes an EMA baseline and scales the signed distance to that baseline
+        by prior ATR. This catches late, exhausted entries where price is
+        already several ATRs away from its short-term equilibrium.
+
+    Long-only strategies typically use `is_long_allowed()`. Short-only
+    strategies typically use `is_short_allowed()`.
+    """
+
+    def __init__(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        baseline_window: int = 20,
+        atr_window: int = 14,
+        max_long_stretch_atr: float = 1.75,
+        max_short_stretch_atr: float = 1.75,
+    ) -> None:
+        """
+        Args:
+            high: High price Series indexed by bar timestamp.
+            low: Low price Series indexed by bar timestamp.
+            close: Close price Series indexed by bar timestamp.
+            baseline_window: EMA span used as the local equilibrium estimate.
+            atr_window: ATR lookback used to normalise distance from baseline.
+            max_long_stretch_atr: Maximum allowed positive stretch for long entries.
+            max_short_stretch_atr: Maximum allowed negative stretch for short entries.
+        """
+        baseline = close.ewm(span=baseline_window, adjust=False).mean()
+        atr_ref = wilder_atr(high, low, close, atr_window).shift(1)
+        signed_stretch = (close - baseline) / atr_ref
+
+        self.max_long_stretch_atr = max_long_stretch_atr
+        self.max_short_stretch_atr = max_short_stretch_atr
+        self._signed_stretch: pd.Series = signed_stretch
+        self._long_allowed: pd.Series = (
+            (signed_stretch <= max_long_stretch_atr).where(atr_ref.notna(), True).fillna(True)
+        )
+        self._short_allowed: pd.Series = (
+            (signed_stretch >= -max_short_stretch_atr).where(atr_ref.notna(), True).fillna(True)
+        )
+
+    def is_long_allowed(self, timestamp) -> bool:
+        """
+        Returns True when a long entry is not too extended above baseline.
+
+        Args:
+            timestamp: Current bar index value.
+
+        Returns:
+            True if signed stretch is below the configured long threshold.
+        """
+        try:
+            return bool(self._long_allowed.at[timestamp])
+        except KeyError:
+            return True
+
+    def is_short_allowed(self, timestamp) -> bool:
+        """
+        Returns True when a short entry is not too extended below baseline.
+
+        Args:
+            timestamp: Current bar index value.
+
+        Returns:
+            True if signed stretch is above the configured short threshold.
+        """
+        try:
+            return bool(self._short_allowed.at[timestamp])
+        except KeyError:
+            return True
+
+    def is_allowed(self, timestamp) -> bool:
+        """
+        Returns True when neither side is in an extreme stretched state.
+
+        Args:
+            timestamp: Current bar index value.
+
+        Returns:
+            True if the absolute stretch remains within both configured bounds.
+        """
+        return self.is_long_allowed(timestamp) and self.is_short_allowed(timestamp)
+
+    def get(self, timestamp, default: float = np.nan) -> float:
+        """
+        Returns the signed ATR-normalised distance from the EMA baseline.
+
+        Args:
+            timestamp: Current bar index value.
+            default: Fallback value when the timestamp is not available.
+
+        Returns:
+            Positive values mean price is stretched upward; negative downward.
+        """
+        try:
+            val = self._signed_stretch.at[timestamp]
+        except KeyError:
+            return default
+        return float(val) if not np.isnan(val) else default
+
+    def as_series(self) -> pd.Series:
+        """Returns the signed stretch Series in ATR units."""
+        return self._signed_stretch
 
 
 class ADFFilter:

@@ -44,7 +44,7 @@ MODES
   python run.py --validate-data YM --tf 5m
 
   ── Single backtest ───────────────────────────────────────────────────────
-  python run.py --backtest --strategy rfp_fractal --symbol 6E --tf 1h --dashboard
+  python run.py --backtest --strategy channel_breakout --symbol GC --tf 30m --dashboard
 
   ── Walk-Forward Optimization (single) ────────────────────────────────────
   python run.py --wfo --strategy three_bar_mr --symbol GC --tf 5m
@@ -54,7 +54,7 @@ MODES
   python run.py --portfolio-backtest --portfolio-config path/to/config.yaml
 
   ── Batch: one strategy, many symbols / timeframes ────────────────────────
-  python run.py batch --strategies three_bar_mr --symbol ES NQ RTY YM CL NG GC SI 6E --tf 30m 1h #pa jaunam sito
+  python run.py batch --strategies channel_breakout --symbol ES NQ RTY YM CL NG GC SI 6E --tf 30m 1h
   python run.py batch --strategies sma_pullback ict_ob --symbol ES --tf 1h 30m
 
   ── WFO-Batch: full walk-forward sweep across scenarios ───────────────────

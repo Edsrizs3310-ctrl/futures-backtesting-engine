@@ -42,7 +42,6 @@ look-ahead bias.  on_bar() does only O(1) dict lookups.
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional
 
@@ -51,7 +50,11 @@ import pandas as pd
 
 from src.backtest_engine.execution import Order
 from src.strategies.base import BaseStrategy
-from src.strategies.filters import VolatilityRegimeFilter
+from src.strategies.filters import (
+    VolatilityRegimeFilter,
+    apply_wfo_dataclass_overrides,
+    wilder_atr,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -150,12 +153,7 @@ class IctOrderBlockStrategy(BaseStrategy):
         super().__init__(engine)
 
         cfg = config or IctOrderBlockConfig()
-
-        # WFO parameter injection: engine.settings may carry ob_* / ict_* keys
-        for field in dataclasses.fields(cfg):
-            wfo_key = f"ict_{field.name}"
-            if hasattr(engine.settings, wfo_key):
-                setattr(cfg, field.name, getattr(engine.settings, wfo_key))
+        apply_wfo_dataclass_overrides(engine, cfg, "ict")
 
         self.config = cfg
 
@@ -164,16 +162,7 @@ class IctOrderBlockStrategy(BaseStrategy):
         low    = engine.data["low"]
         open_  = engine.data["open"]
 
-        # ── ATR (Wilder EWM) ───────────────────────────────────────────────────
-        tr = pd.concat(
-            [
-                high - low,
-                (high - close.shift(1)).abs(),
-                (low  - close.shift(1)).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-        atr = tr.ewm(span=cfg.atr_window, adjust=False).mean()
+        atr = wilder_atr(high, low, close, cfg.atr_window)
 
         self._atr:   pd.Series = atr
         self._open:  pd.Series = open_

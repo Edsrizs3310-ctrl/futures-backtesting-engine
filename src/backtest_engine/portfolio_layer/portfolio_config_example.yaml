@@ -29,33 +29,50 @@
 
 portfolio:
   rebalance_frequency: daily           # intrabar | daily | weekly
-  benchmark_symbol: NQ                 # Buy-and-hold benchmark shown in dashboard (null to disable)
+  benchmark_symbol: ES                 # Buy-and-hold benchmark shown in dashboard (null to disable)
 
   # Vol-targeting
-  target_portfolio_vol: 0.25           # Annualised portfolio vol target (25%)
+  target_portfolio_vol: 0.15           # Annualised portfolio vol target (25%)
   vol_lookback_bars: 20                # Rolling window (bars) for realised vol estimate
   max_weight_expansion: 4.0            # Duty-cycle sizing cap; 4.0 means at most 2x expansion
   max_contracts_per_slot: null         # Optional hard cap on contracts per (slot, symbol)
 
 strategies:
-  - strategy: three_bar_mr
-    symbols:
-      - GC
-    weight: 0.20
-    duty_cycle: 0.2183              
-    timeframe: 5m
-    params: {}
-    
-  #duty_call, to find out correclty on first test, set to 1.0!
-  #then, when you get exact data(see manual below), update it.
 
   - strategy: three_bar_mr
     symbols:
-      - NQ
-    weight: 0.80
-    duty_cycle: 0.051            
+      - YM
+    weight: 0.25
+    duty_cycle: 0.0261         
     timeframe: 1h
     params: {}
+
+  - strategy: rfp_fractal
+    symbols:
+      - 6E
+    weight: 0.25
+    duty_cycle: 0.0094        
+    timeframe: 1h
+    params: {}
+
+  - strategy: rfp_fractal
+    symbols:
+      - YM
+    weight: 0.25
+    duty_cycle: 0.0081        
+    timeframe: 1h
+    params: {}
+
+  - strategy: channel_breakout
+    symbols:
+      - GC
+    weight: 0.25
+    duty_cycle: 0.0133        
+    timeframe: 30m
+    params: {}
+
+  #duty_call, to find out correclty on first test, set to 1.0!
+  #then, when you get exact data(see manual below), update it.
 
 # HOW TO FIND THE RIGHT DUTY CYCLE:
 # 1. Start with `duty_cycle: 1.0` for your new strategy.

@@ -37,11 +37,19 @@ STRATEGIES = {
         "name": "RollingFractalPivotStrategy",
         "description": "Fractal pivot / IBS reclaim",
     },
+    "channel_breakout": {
+        "class_path": (
+            "src.strategies.channel_breakout_long:ChannelBreakoutLongStrategy"
+        ),
+        "name": "ChannelBreakoutLongStrategy",
+        "description": "Donchian channel breakout (long only)",
+    },
 }
 
 STRATEGY_ALIASES = {
     "ict_order_block": "ict_ob",
     "rolling_fractal_pivot": "rfp_fractal",
+    "channel_breakout_long": "channel_breakout",
 }
 
 

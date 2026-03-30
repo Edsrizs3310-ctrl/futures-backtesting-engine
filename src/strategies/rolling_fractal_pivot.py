@@ -15,7 +15,6 @@ fill at open[t+1]. No extra manual shift on indicators.
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +23,14 @@ import pandas as pd
 
 from src.backtest_engine.execution import Order
 from src.strategies.base import BaseStrategy
+from src.strategies.filters import (
+    AtrStretchFilter,
+    ShockFilter,
+    apply_wfo_dataclass_overrides,
+    gate_trade_direction,
+    hour_of_day_mask,
+    wilder_atr,
+)
 
 _IBS_DENOM_EPS = 1e-5
 
@@ -62,6 +69,16 @@ class RollingFractalPivotConfig:
     end_hour: int = 15
     enable_time_filter: bool = True
     trade_direction: str = "both"
+    use_shock_filter: bool = True
+    shock_atr_window: int = 14
+    shock_max_gap_atr: float = 1.0
+    shock_max_range_atr: float = 2.75
+    shock_max_close_change_atr: float = 1.8
+    use_stretch_filter: bool = True
+    stretch_baseline_window: int = 20
+    stretch_atr_window: int = 14
+    stretch_max_long_atr: float = 2.0
+    stretch_max_short_atr: float = 2.0
 
 
 def _rolling_fractal_levels(
@@ -96,22 +113,6 @@ def _rolling_fractal_levels(
     return out_high, out_low
 
 
-def _hour_mask(
-    index: pd.Index,
-    start_h: int,
-    end_h: int,
-    enabled: bool,
-) -> np.ndarray:
-    """Boolean mask for bars whose clock hour lies in [start, end) or wrap."""
-    if not enabled:
-        return np.ones(len(index), dtype=bool)
-    dt = pd.DatetimeIndex(pd.to_datetime(index, utc=False))
-    h = dt.hour.to_numpy()
-    if start_h <= end_h:
-        return (h >= start_h) & (h < end_h)
-    return (h >= start_h) | (h < end_h)
-
-
 class RollingFractalPivotStrategy(BaseStrategy):
     """
     Fractal-based breakout/reclaim entries with ATR bracket exits.
@@ -130,10 +131,7 @@ class RollingFractalPivotStrategy(BaseStrategy):
         super().__init__(engine)
         cfg = config or RollingFractalPivotConfig()
 
-        for field in dataclasses.fields(cfg):
-            wfo_key = f"rfp_{field.name}"
-            if hasattr(engine.settings, wfo_key):
-                setattr(cfg, field.name, getattr(engine.settings, wfo_key))
+        apply_wfo_dataclass_overrides(engine, cfg, "rfp")
 
         self.config = cfg
 
@@ -152,7 +150,7 @@ class RollingFractalPivotStrategy(BaseStrategy):
         denom = np.maximum(hl_rng, _IBS_DENOM_EPS)
         ibs = (close.to_numpy(dtype=np.float64) - lo_a) / denom
 
-        in_win = _hour_mask(
+        in_win = hour_of_day_mask(
             close.index,
             cfg.start_hour,
             cfg.end_hour,
@@ -190,19 +188,35 @@ class RollingFractalPivotStrategy(BaseStrategy):
         long_sig = buy_raw & ~both
         short_sig = sell_raw & ~both
 
-        tr = pd.concat(
-            [
-                high - low,
-                (high - close.shift(1)).abs(),
-                (low - close.shift(1)).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-        atr = tr.ewm(span=cfg.atr_length, adjust=False).mean()
+        atr = wilder_atr(high, low, close, cfg.atr_length)
 
         self._long_sig = pd.Series(long_sig, index=close.index)
         self._short_sig = pd.Series(short_sig, index=close.index)
         self._atr = atr
+        self._shock_filter: Optional[ShockFilter] = None
+        if cfg.use_shock_filter:
+            self._shock_filter = ShockFilter(
+                open_=open_,
+                high=high,
+                low=low,
+                close=close,
+                atr_window=cfg.shock_atr_window,
+                max_gap_atr=cfg.shock_max_gap_atr,
+                max_range_atr=cfg.shock_max_range_atr,
+                max_close_change_atr=cfg.shock_max_close_change_atr,
+            )
+
+        self._stretch_filter: Optional[AtrStretchFilter] = None
+        if cfg.use_stretch_filter:
+            self._stretch_filter = AtrStretchFilter(
+                high=high,
+                low=low,
+                close=close,
+                baseline_window=cfg.stretch_baseline_window,
+                atr_window=cfg.stretch_atr_window,
+                max_long_stretch_atr=cfg.stretch_max_long_atr,
+                max_short_stretch_atr=cfg.stretch_max_short_atr,
+            )
 
         self._invested = False
         self._position_side: Optional[str] = None
@@ -233,6 +247,13 @@ class RollingFractalPivotStrategy(BaseStrategy):
         except KeyError:
             return []
 
+        if self._shock_filter is not None and not self._shock_filter.is_allowed(ts):
+            long_ok = False
+            short_ok = False
+        if self._stretch_filter is not None:
+            long_ok = long_ok and self._stretch_filter.is_long_allowed(ts)
+            short_ok = short_ok and self._stretch_filter.is_short_allowed(ts)
+
         c_close = float(bar["close"])
         c_high = float(bar["high"])
         c_low = float(bar["low"])
@@ -254,11 +275,9 @@ class RollingFractalPivotStrategy(BaseStrategy):
                     return orders
             return orders
 
-        direction = self.config.trade_direction.lower()
-        if direction == "long":
-            short_ok = False
-        elif direction == "short":
-            long_ok = False
+        long_ok, short_ok = gate_trade_direction(
+            self.config.trade_direction, long_ok, short_ok
+        )
 
         if not long_ok and not short_ok:
             return orders

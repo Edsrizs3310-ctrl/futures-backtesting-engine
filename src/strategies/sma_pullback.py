@@ -11,7 +11,6 @@ Signal logic:
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +19,7 @@ import pandas as pd
 
 from src.backtest_engine.execution import Order
 from src.strategies.base import BaseStrategy
+from src.strategies.filters import apply_wfo_dataclass_overrides, wilder_atr
 
 @dataclass
 class SmaPullbackConfig:
@@ -64,11 +64,7 @@ class SmaPullbackStrategy(BaseStrategy):
     def __init__(self, engine, config: Optional[SmaPullbackConfig] = None) -> None:
         super().__init__(engine)
         cfg = config or SmaPullbackConfig()
-
-        for field in dataclasses.fields(cfg):
-            wfo_key = f"smapull_{field.name}"
-            if hasattr(engine.settings, wfo_key):
-                setattr(cfg, field.name, getattr(engine.settings, wfo_key))
+        apply_wfo_dataclass_overrides(engine, cfg, "smapull")
 
         self.config = cfg
         close = engine.data["close"]
@@ -92,9 +88,7 @@ class SmaPullbackStrategy(BaseStrategy):
         signals.loc[uptrend & touching_sma] = 1.0
         signals.loc[downtrend & touching_sma] = -1.0
 
-        # ATR
-        tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.ewm(span=cfg.atr_window, adjust=False).mean()
+        atr = wilder_atr(high, low, close, cfg.atr_window)
 
         # Indicators are looked up directly from the closing bar's timestamp.
         self._signal = signals

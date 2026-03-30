@@ -29,7 +29,6 @@ All masks are pre-computed in __init__; on_bar() is O(1) lookup + state.
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, List, Optional
@@ -39,6 +38,11 @@ import pandas as pd
 
 from src.backtest_engine.execution import Order
 from src.strategies.base import BaseStrategy
+from src.strategies.filters import (
+    ShockFilter,
+    apply_wfo_dataclass_overrides,
+    gate_trade_direction,
+)
 
 
 @dataclass
@@ -57,7 +61,12 @@ class ThreeBarMeanReversionConfig:
 
     regime_window: int = 50
     extreme_lookback: int = 5
-    trade_direction: str = "both"
+    trade_direction: str = "long"
+    use_shock_filter: bool = True
+    shock_atr_window: int = 14
+    shock_max_gap_atr: float = 1.0
+    shock_max_range_atr: float = 2.5
+    shock_max_close_change_atr: float = 1.75
 
 
 class ThreeBarMeanReversionStrategy(BaseStrategy):
@@ -66,17 +75,14 @@ class ThreeBarMeanReversionStrategy(BaseStrategy):
     def __init__(self, engine, config: Optional[ThreeBarMeanReversionConfig] = None) -> None:
         super().__init__(engine)
         cfg = config or ThreeBarMeanReversionConfig()
-
-        for field in dataclasses.fields(cfg):
-            wfo_key = f"tbar_{field.name}"
-            if hasattr(engine.settings, wfo_key):
-                setattr(cfg, field.name, getattr(engine.settings, wfo_key))
+        apply_wfo_dataclass_overrides(engine, cfg, "tbar")
 
         self.config = cfg
 
         close = engine.data["close"].astype(float)
         low = engine.data["low"].astype(float)
         high = engine.data["high"].astype(float)
+        open_ = engine.data["open"].astype(float)
 
         c0, c1, c2 = close, close.shift(1), close.shift(2)
         falling_3 = (c0 < c1) & (c1 < c2)
@@ -99,6 +105,19 @@ class ThreeBarMeanReversionStrategy(BaseStrategy):
         bear = (regime_ff == 0.0) & valid_regime
         long_sig = falling_3 & long_extreme & bull
         short_sig = rising_3 & short_extreme & bear
+
+        self._shock_filter: Optional[ShockFilter] = None
+        if cfg.use_shock_filter:
+            self._shock_filter = ShockFilter(
+                open_=open_,
+                high=high,
+                low=low,
+                close=close,
+                atr_window=cfg.shock_atr_window,
+                max_gap_atr=cfg.shock_max_gap_atr,
+                max_range_atr=cfg.shock_max_range_atr,
+                max_close_change_atr=cfg.shock_max_close_change_atr,
+            )
 
         self._long_sig = long_sig
         self._short_sig = short_sig
@@ -153,12 +172,13 @@ class ThreeBarMeanReversionStrategy(BaseStrategy):
 
         long_ok = bool(self._long_sig.loc[ts])
         short_ok = bool(self._short_sig.loc[ts])
-
-        direction = self.config.trade_direction.lower()
-        if direction == "long":
-            short_ok = False
-        elif direction == "short":
+        if self._shock_filter is not None and not self._shock_filter.is_allowed(ts):
             long_ok = False
+            short_ok = False
+
+        long_ok, short_ok = gate_trade_direction(
+            self.config.trade_direction, long_ok, short_ok
+        )
 
         if not long_ok and not short_ok:
             return orders
