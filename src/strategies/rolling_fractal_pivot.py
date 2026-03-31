@@ -314,10 +314,10 @@ class RollingFractalPivotStrategy(BaseStrategy):
     @classmethod
     def get_search_space(cls) -> Dict[str, Any]:
         return {
-            "rfp_lookback_bars": (5, 20, 1),
-            "rfp_atr_length": (10, 22, 2),
-            "rfp_atr_mult_tp": (1.0, 3.0, 0.25),
+            "rfp_lookback_bars": (5, 18, 1),
+            "rfp_atr_length": (10, 24, 2),
+            "rfp_atr_mult_tp": (1.5, 4.0, 0.5),
             "rfp_atr_mult_sl": (1.0, 3.0, 0.25),
-            "rfp_ibs_buy_threshold": (0.55, 0.85, 0.05),
-            "rfp_ibs_sell_threshold": (0.15, 0.45, 0.05),
+            "rfp_ibs_buy_threshold": (0.60, 0.85, 0.05),
+            "rfp_ibs_sell_threshold": (0.15, 0.40, 0.05),
         }

@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.backtest_engine.execution import Order
+from src.strategies.channel_breakout_long import ChannelBreakoutLongStrategy
 from src.strategies.mean_reversion_three_bar import ThreeBarMeanReversionStrategy
 from src.strategies.registry import get_strategy_ids, load_strategy_by_id
 
@@ -154,3 +155,37 @@ def test_three_bar_mr_emits_day_limit_entry_on_signal() -> None:
     assert order.side == "BUY"
     assert order.limit_price is not None
     assert order.limit_price < float(bar["close"])
+
+
+def test_channel_breakout_emits_ioc_stop_entry() -> None:
+    """Channel breakout should stage the next-bar breakout with an IOC stop order."""
+    idx = pd.date_range("2020-01-01", periods=6, freq="1h")
+    data = pd.DataFrame(
+        {
+            "open": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+            "high": [101.0, 102.0, 103.0, 104.0, 105.0, 106.0],
+            "low": [99.0, 100.0, 101.0, 102.0, 103.0, 104.0],
+            "close": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+            "volume": [1000.0] * 6,
+        },
+        index=idx,
+    )
+
+    engine = MockEngine()
+    engine.data = data
+    engine.settings.chbrk_length = 3
+    engine.settings.chbrk_ema_period = 2
+    engine.settings.chbrk_trade_direction = "long"
+    engine.settings.chbrk_use_shock_filter = False
+    engine.settings.chbrk_entry_buffer_ticks = 1
+
+    strategy = ChannelBreakoutLongStrategy(engine=engine)
+    orders = strategy.on_bar(data.iloc[-1])
+
+    assert len(orders) == 1
+    order = orders[0]
+    assert isinstance(order, Order)
+    assert order.order_type == "STOP"
+    assert order.time_in_force == "IOC"
+    assert order.side == "BUY"
+    assert order.stop_price is not None

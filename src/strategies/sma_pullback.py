@@ -178,9 +178,10 @@ class SmaPullbackStrategy(BaseStrategy):
     @classmethod
     def get_search_space(cls) -> Dict[str, Any]:
         return {
-            "smapull_fast_sma_window": (30, 90, 10),
-            "smapull_slow_sma_window": (120, 320, 20),
+            "smapull_fast_sma_window": (20, 80, 10),
+            "smapull_slow_sma_window": (120, 300, 30),
             "smapull_atr_window":      (10, 30, 5),
-            "smapull_atr_sl_mult":     (1.0, 3.0, 0.25),
-            "smapull_rr_ratio":        (1.5, 4.0, 0.25),
+            "smapull_atr_sl_mult":     (1.25, 3.0, 0.25),
+            "smapull_rr_ratio":        (1.5, 4.0, 0.5),
+            "smapull_trade_direction": ["both", "long", "short"],
         }

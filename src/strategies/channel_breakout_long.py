@@ -46,6 +46,7 @@ class ChannelBreakoutLongConfig:
 
     length: int = 50
     ema_period: int = 200
+    entry_buffer_ticks: int = 1
     trade_direction: str = "long"  # "both" | "long" | "short"
     use_shock_filter: bool = True
     shock_atr_window: int = 14
@@ -82,6 +83,7 @@ class ChannelBreakoutLongStrategy(BaseStrategy):
         open_ = engine.data["open"].astype(float)
 
         tick = float(self.settings.get_instrument_spec(self.settings.default_symbol)["tick_size"])
+        buffer = tick * max(1, int(cfg.entry_buffer_ticks))
 
         ema = close.ewm(span=ema_n, adjust=False).mean()
         self._above_ema = close > ema
@@ -89,12 +91,10 @@ class ChannelBreakoutLongStrategy(BaseStrategy):
 
         up_bound = high.rolling(L, min_periods=L).max()
         down_bound = low.rolling(L, min_periods=L).min()
-        entry_stop = up_bound.shift(1) + tick
-        exit_stop = down_bound.shift(1) - tick
-
-        # Break up: long entry + cover short. Break down: short entry + exit long.
-        self._break_up = (high >= entry_stop) & entry_stop.notna()
-        self._break_down = (low <= exit_stop) & exit_stop.notna()
+        self._long_entry_stop = up_bound.shift(1) + buffer
+        self._short_entry_stop = down_bound.shift(1) - buffer
+        self._long_exit_stop = down_bound.shift(1) - buffer
+        self._short_exit_stop = up_bound.shift(1) + buffer
 
         self._shock_filter: Optional[ShockFilter] = None
         if cfg.use_shock_filter:
@@ -112,13 +112,14 @@ class ChannelBreakoutLongStrategy(BaseStrategy):
         self._invested = False
         self._position_side: Optional[str] = None
 
-        n_up = int(self._break_up.sum())
-        n_dn = int(self._break_down.sum())
+        n_up = int(self._long_entry_stop.notna().sum())
+        n_dn = int(self._short_entry_stop.notna().sum())
         n_bars = len(high)
         print(
             f"[Channel Breakout] Ready | L={L} EMA={ema_n} | "
             f"direction={cfg.trade_direction} | "
-            f"break_up={n_up:,} break_down={n_dn:,} / {n_bars:,} bars | tick={tick}"
+            f"entry_stop={n_up:,} short_stop={n_dn:,} / {n_bars:,} bars | "
+            f"tick={tick} | buffer_ticks={cfg.entry_buffer_ticks}"
         )
 
     def on_bar(self, bar: pd.Series) -> List[Order]:
@@ -126,63 +127,76 @@ class ChannelBreakoutLongStrategy(BaseStrategy):
         orders: List[Order] = []
 
         try:
-            bu = bool(self._break_up.loc[ts])
-            bd = bool(self._break_down.loc[ts])
             above = bool(self._above_ema.loc[ts])
             below = bool(self._below_ema.loc[ts])
+            long_entry_stop = self._long_entry_stop.loc[ts]
+            short_entry_stop = self._short_entry_stop.loc[ts]
+            long_exit_stop = self._long_exit_stop.loc[ts]
+            short_exit_stop = self._short_exit_stop.loc[ts]
         except KeyError:
             return []
+
+        current_qty = float(self.get_position())
+        if current_qty > 0:
+            self._invested = True
+            self._position_side = "LONG"
+        elif current_qty < 0:
+            self._invested = True
+            self._position_side = "SHORT"
+        else:
+            self._invested = False
+            self._position_side = None
 
         shock_ok = True if self._shock_filter is None else self._shock_filter.is_allowed(ts)
 
         td = self.config.trade_direction.strip().lower()
-        long_raw = bu and above and shock_ok
-        short_raw = bd and below and shock_ok
+        long_raw = pd.notna(long_entry_stop) and above and shock_ok
+        short_raw = pd.notna(short_entry_stop) and below and shock_ok
         long_ok, short_ok = gate_trade_direction(td, long_raw, short_raw)
 
         if self._invested:
-            if self._position_side == "LONG" and bd:
+            if self._position_side == "LONG" and pd.notna(long_exit_stop):
                 orders.append(
-                    self.market_order(
+                    self.stop_order(
                         "SELL",
                         self.settings.fixed_qty,
-                        reason="CHBRK_LONG_EXIT",
+                        stop_price=float(long_exit_stop),
+                        reason="CHBRK_LONG_EXIT_STOP",
+                        time_in_force="IOC",
                     )
                 )
-                self._invested = False
-                self._position_side = None
                 return orders
-            if self._position_side == "SHORT" and bu:
+            if self._position_side == "SHORT" and pd.notna(short_exit_stop):
                 orders.append(
-                    self.market_order(
+                    self.stop_order(
                         "BUY",
                         self.settings.fixed_qty,
-                        reason="CHBRK_SHORT_COVER",
+                        stop_price=float(short_exit_stop),
+                        reason="CHBRK_SHORT_EXIT_STOP",
+                        time_in_force="IOC",
                     )
                 )
-                self._invested = False
-                self._position_side = None
                 return orders
             return orders
 
         if long_ok:
-            self._invested = True
-            self._position_side = "LONG"
             orders.append(
-                self.market_order(
+                self.stop_order(
                     "BUY",
                     self.settings.fixed_qty,
+                    stop_price=float(long_entry_stop),
                     reason="CHBRK_LONG_ENTRY",
+                    time_in_force="IOC",
                 )
             )
         elif short_ok:
-            self._invested = True
-            self._position_side = "SHORT"
             orders.append(
-                self.market_order(
+                self.stop_order(
                     "SELL",
                     self.settings.fixed_qty,
+                    stop_price=float(short_entry_stop),
                     reason="CHBRK_SHORT_ENTRY",
+                    time_in_force="IOC",
                 )
             )
 
@@ -191,6 +205,10 @@ class ChannelBreakoutLongStrategy(BaseStrategy):
     @classmethod
     def get_search_space(cls) -> Dict[str, Any]:
         return {
-            "chbrk_length": (5, 150, 5),
-            "chbrk_ema_period": (100, 2000, 100),
+            "chbrk_length": (20, 120, 10),
+            "chbrk_ema_period": (50, 400, 25),
+            "chbrk_entry_buffer_ticks": (1, 4, 1),
+            "chbrk_shock_max_gap_atr": (0.75, 2.0, 0.25),
+            "chbrk_shock_max_range_atr": (2.0, 4.0, 0.25),
+            "chbrk_shock_max_close_change_atr": (1.25, 3.0, 0.25),
         }

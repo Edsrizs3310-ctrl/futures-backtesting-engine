@@ -22,6 +22,8 @@ class Order:
     placed_at: Optional[datetime] = None
     status: str = "NEW"
     reduce_only: bool = False
+    oco_group_id: Optional[str] = None
+    oco_role: Optional[str] = None
 
 @dataclass
 class Fill:
@@ -251,6 +253,40 @@ class ExecutionHandler:
         if order_type == "STOP_LIMIT":
             return self._resolve_stop_limit_fill_price(order, open_price, high_price, low_price)
         return None
+
+    def preview_fill_price(
+        self,
+        order: Order,
+        data_bar: pd.Series,
+        execute_at_close: bool = False,
+    ) -> Optional[float]:
+        """
+        Returns the pre-slippage fill price without mutating order state.
+
+        Methodology:
+        Single-engine OCO coordination needs a deterministic "would this fill?"
+        probe before choosing a winning sibling. This helper intentionally
+        mirrors the real bar-fill logic while avoiding status transitions such
+        as FILLED / REJECTED / CANCELLED during preview.
+        """
+        order_type = str(order.order_type).upper()
+        if order.quantity <= 0:
+            return None
+        if order_type == "LIMIT" and order.limit_price is None:
+            return None
+        if order_type == "STOP" and order.stop_price is None:
+            return None
+        if order_type == "STOP_LIMIT":
+            if order.stop_price is None or order.limit_price is None:
+                return None
+        if order_type not in {"MARKET", "LIMIT", "STOP", "STOP_LIMIT"}:
+            return None
+        return self._resolve_bar_fill_price(
+            order=order,
+            order_type=order_type,
+            data_bar=data_bar,
+            execute_at_close=execute_at_close,
+        )
 
     @staticmethod
     def _bar_value(data_bar: Any, key: str, default: Optional[float] = None) -> Optional[float]:

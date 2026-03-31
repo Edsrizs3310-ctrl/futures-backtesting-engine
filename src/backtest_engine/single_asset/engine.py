@@ -71,6 +71,9 @@ class BacktestEngine:
         self.trading_halted_today: bool = False
         self.trading_halted_permanently: bool = False
         self._eod_closed_dates: set[date] = set()
+        # Optional lower-timeframe replay cache used only for explicit same-bar
+        # OCO conflict resolution in the single-asset engine.
+        self._intrabar_data: Optional[pd.DataFrame] = None
 
     # ── Risk management ────────────────────────────────────────────────────────
 
@@ -219,6 +222,171 @@ class BacktestEngine:
             trade_start_time=trade_start_time,
             trade_end_time=trade_end_time,
         )
+
+    def _intrabar_conflict_replay_enabled(self) -> bool:
+        """
+        Returns True when lower-timeframe OCO replay is explicitly enabled.
+        """
+        return (
+            str(self.settings.intrabar_conflict_resolution).lower() == "lower_timeframe"
+            and bool(self.settings.intrabar_resolution_timeframe)
+        )
+
+    def _get_intrabar_conflict_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """
+        Returns lower-timeframe replay data for the active single-asset symbol.
+
+        Methodology:
+            The single engine stays on the primary timeframe during normal
+            execution. Lower-timeframe data is loaded lazily only when a real
+            same-bar protective OCO conflict needs replay. Missing replay data
+            is a valid outcome and must fall back to the pessimistic policy.
+        """
+        if not self._intrabar_conflict_replay_enabled():
+            return None
+        if self._intrabar_data is not None:
+            return self._intrabar_data
+
+        timeframe = str(self.settings.intrabar_resolution_timeframe)
+        df = self.data_lake.load(
+            symbol,
+            timeframe=timeframe,
+            start_date=self.start_date,
+            end_date=self.end_date,
+        )
+        self._intrabar_data = df if not df.empty else pd.DataFrame()
+        return self._intrabar_data
+
+    def _intrabar_resolution_step(self) -> Optional[pd.Timedelta]:
+        """
+        Returns the configured lower-timeframe step as a Timedelta.
+        """
+        timeframe = self.settings.intrabar_resolution_timeframe
+        if timeframe is None:
+            return None
+
+        timeframe_str = str(timeframe).strip().lower()
+        if timeframe_str.endswith("m"):
+            try:
+                minutes = int(timeframe_str[:-1])
+            except ValueError:
+                return None
+            if minutes <= 0:
+                return None
+            return pd.Timedelta(minutes=minutes)
+
+        if timeframe_str.endswith("h"):
+            try:
+                hours = int(timeframe_str[:-1])
+            except ValueError:
+                return None
+            if hours <= 0:
+                return None
+            return pd.Timedelta(hours=hours)
+
+        return None
+
+    def _intrabar_replay_slice(
+        self,
+        timestamp: object,
+        symbol: str,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Returns the lower-timeframe slice covering one coarse bar, if complete.
+        """
+        if not self._intrabar_conflict_replay_enabled():
+            return None
+        if self.data.empty or timestamp not in self.data.index:
+            return None
+
+        lower_df = self._get_intrabar_conflict_data(symbol)
+        if lower_df is None or lower_df.empty:
+            return None
+
+        loc = self.data.index.get_loc(timestamp)
+        if not isinstance(loc, int) or loc <= 0:
+            return None
+
+        start_ts = self.data.index[loc - 1]
+        end_ts = pd.Timestamp(timestamp)
+        replay_step = self._intrabar_resolution_step()
+        if replay_step is None:
+            return None
+
+        replay = lower_df.loc[(lower_df.index > start_ts) & (lower_df.index <= end_ts)]
+        if replay.empty:
+            return None
+
+        expected_index = pd.date_range(
+            start=pd.Timestamp(start_ts) + replay_step,
+            end=end_ts,
+            freq=replay_step,
+        )
+        if expected_index.empty:
+            return None
+        if len(replay.index) != len(expected_index):
+            return None
+        if not replay.index.equals(expected_index):
+            return None
+        return replay
+
+    def _resolve_oco_winner_on_bar_sequence(
+        self,
+        orders: List[Order],
+        bars: pd.DataFrame,
+    ) -> Optional[Order]:
+        """
+        Resolves the first determinable OCO winner from a chronological replay.
+        """
+        for _, replay_bar in bars.iterrows():
+            fillable = [
+                order
+                for order in orders
+                if self.execution.preview_fill_price(order, replay_bar) is not None
+            ]
+            if not fillable:
+                continue
+            if len(fillable) == 1:
+                return fillable[0]
+            return self._select_pessimistic_oco_winner(fillable)
+        return None
+
+    @staticmethod
+    def _select_pessimistic_oco_winner(orders: List[Order]) -> Order:
+        """
+        Selects the pessimistic stop-first winner on a coarse-bar conflict.
+        """
+        stops = [
+            order
+            for order in orders
+            if str(order.oco_role or "").upper() == "STOP"
+            or str(order.order_type).upper() in {"STOP", "STOP_LIMIT"}
+        ]
+        if stops:
+            return sorted(stops, key=lambda order: order.id)[0]
+        return sorted(orders, key=lambda order: order.id)[0]
+
+    def _select_oco_winner(
+        self,
+        orders: List[Order],
+        timestamp: object,
+        symbol: str,
+    ) -> Order:
+        """
+        Resolves a same-bar OCO conflict with optional lower-TF replay.
+
+        Methodology:
+            If lower-timeframe replay is enabled and complete, the engine uses
+            it to determine which sibling fills first inside the coarse bar.
+            Missing or anomalous replay data must fall back to the pessimistic
+            stop-first policy to avoid optimistic same-bar outcomes.
+        """
+        replay = self._intrabar_replay_slice(timestamp=timestamp, symbol=symbol)
+        if replay is not None:
+            replay_winner = self._resolve_oco_winner_on_bar_sequence(orders, replay)
+            if replay_winner is not None:
+                return replay_winner
+        return self._select_pessimistic_oco_winner(orders)
 
     def _should_force_eod_close(
         self,
@@ -380,6 +548,14 @@ class BacktestEngine:
                 ),
                 can_attempt=lambda order: self._is_priority_order(order) or (
                     not self.trading_halted_today and session_ok
+                ),
+                # Preview is non-mutating so OCO groups can pick one winner
+                # without prematurely filling or rejecting sibling orders.
+                preview_fill=lambda order: self.execution.preview_fill_price(order, bar),
+                select_oco_winner=lambda orders: self._select_oco_winner(
+                    orders,
+                    timestamp=timestamp,
+                    symbol=symbol,
                 ),
             )
             for fill in fills:

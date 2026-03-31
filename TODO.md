@@ -12,3 +12,8 @@
 - [ ] Add Shuffled/Bootstrap test for WFO.
 - [ ] Add regime analysis in WFO
 - [ ] In terminal UI, vol after entry, change to proper vol drag analysis.
+- [ ] Define and document maker/taker-style execution assumptions for `LIMIT` vs `MARKET` / `STOP` / `STOP_LIMIT` orders.
+- [ ] Add calibrated default `commission_rate_by_order_type` and `spread_tick_multipliers_by_order_type` profiles instead of relying on one flat friction model.
+- [ ] Align optimization/WFO rough cost estimation with per-order-type execution costs so `LIMIT` fee/spread assumptions match real backtest fills.
+- [ ] Decide whether passive `LIMIT` orders should model lower spread capture / lower slippage only, or also explicit fee rebates and queue-priority uncertainty. (the last two probably no)
+- [ ] Add regression tests and docs for per-order-type friction semantics across single backtest, portfolio backtest, and WFO.

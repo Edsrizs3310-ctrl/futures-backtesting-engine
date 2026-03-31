@@ -238,10 +238,12 @@ class IctOrderBlockStrategy(BaseStrategy):
         WFOEngine and read back via the dataclass field loop in __init__.
         """
         return {
-            "ict_ob_impulse_atr_mult": (0.5, 1.5, 0.1),
-            "ict_ob_max_age_bars":     (10, 60, 5),
-            "ict_atr_tp_mult":         (2.0, 5.0, 0.25),
-            "ict_sl_offset_ticks":     (0, 3, 1),
+            "ict_ob_impulse_atr_mult": (0.6, 1.6, 0.2),
+            "ict_ob_max_age_bars":     (12, 72, 6),
+            "ict_atr_window":          (10, 24, 2),
+            "ict_atr_tp_mult":         (2.0, 5.0, 0.5),
+            "ict_min_rr_ratio":        (1.5, 4.0, 0.5),
+            "ict_sl_offset_ticks":     (0, 4, 1),
         }
 
     # ── Main event hook ────────────────────────────────────────────────────────

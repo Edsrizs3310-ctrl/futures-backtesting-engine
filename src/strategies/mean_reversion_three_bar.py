@@ -256,7 +256,10 @@ class ThreeBarMeanReversionStrategy(BaseStrategy):
     @classmethod
     def get_search_space(cls) -> Dict[str, Any]:
         return {
-            "tbar_regime_window": (30, 90, 10),
-            "tbar_extreme_lookback": (3, 7, 1),
-            "tbar_entry_limit_atr_frac": (0.05, 0.20, 0.05),
+            "tbar_regime_window": (30, 120, 10),
+            "tbar_extreme_lookback": (3, 9, 1),
+            "tbar_entry_atr_window": (10, 30, 5),
+            "tbar_entry_limit_atr_frac": (0.05, 0.30, 0.05),
+            "tbar_shock_max_gap_atr": (0.75, 1.75, 0.25),
+            "tbar_shock_max_range_atr": (1.75, 3.25, 0.25),
         }
