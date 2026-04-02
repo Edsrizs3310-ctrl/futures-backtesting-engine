@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from src.backtest_engine.config import BacktestSettings
 from src.backtest_engine.single_asset import BacktestEngine
-from src.strategies.sma_pullback import SmaPullbackStrategy
+from src.strategies.registry import load_strategy_by_id
 
 @pytest.fixture
 def mock_data():
@@ -27,7 +27,7 @@ def test_engine_runs_strategy_successfully(mock_data):
     settings.initial_capital = 100000.0
     
     engine = BacktestEngine(data=mock_data, settings=settings)
-    engine.run(SmaPullbackStrategy)
+    engine.run(load_strategy_by_id("sma_pullback"))
     
     assert engine.portfolio is not None
     assert engine.portfolio.total_value > 0

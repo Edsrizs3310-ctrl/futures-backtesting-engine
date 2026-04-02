@@ -5,14 +5,15 @@ from src.backtest_engine.portfolio_layer.domain.orders import PendingPortfolioOr
 from src.backtest_engine.portfolio_layer.domain.signals import StrategySignal, TargetPosition
 from src.backtest_engine.portfolio_layer.engine.engine import PortfolioBacktestEngine
 from src.backtest_engine.config import BacktestSettings
-from src.strategies.sma_pullback import SmaPullbackStrategy
+from src.strategies.registry import load_strategy_by_id
 
 
 def _engine() -> PortfolioBacktestEngine:
+    strategy_class = load_strategy_by_id("sma_pullback")
     config = PortfolioConfig(
         slots=[
             StrategySlot(
-                strategy_class=SmaPullbackStrategy,
+                strategy_class=strategy_class,
                 symbols=["ES"],
                 weight=1.0,
                 timeframe="30m",

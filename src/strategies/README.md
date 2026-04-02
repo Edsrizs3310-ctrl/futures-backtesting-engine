@@ -7,23 +7,19 @@ Each production strategy should be self-contained in its own file under
 it is a pure indicator, mask builder, or other stateless helper. Avoid
 cross-strategy execution helpers or "family" loaders that hide runtime logic.
 
-## Current Strategies
+## Registry-Driven Workflow
 
-Registered strategy IDs currently include:
+Treat `registry.py` as the only canonical list of available strategies.
 
-- `ict_ob`
-- `sma_pullback`
-- `three_bar_mr`
-- `rfp_fractal`
-- `channel_breakout`
-- `bollinger_squeeze_breakout`
-- `keltner_tightening_breakout`
-- `diamond_breakout`
-- `wyckoff_breakout_aggressive`
-- `wyckoff_breakout_moderate`
-- `wyckoff_breakout_conservative`
+Practical workflow:
 
-`registry.py` is the canonical source of truth. The README is a contributor aid only.
+1. Create or update a strategy module under `src/strategies/`.
+2. Register or unregister it in `registry.py`.
+3. Run the relevant tests.
+
+This README intentionally does not list concrete strategy IDs. The strategy set
+changes frequently, and duplicating that inventory in docs creates stale
+maintenance overhead with no operational value.
 
 ## Contract
 

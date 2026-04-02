@@ -13,6 +13,7 @@ from src.backtest_engine.portfolio_layer.domain.signals import (
     BRIDGE_INTENT_REVERSE,
     StrategySignal,
 )
+from src.strategies.registry import load_strategy_by_id
 
 
 def _config(
@@ -24,10 +25,10 @@ def _config(
     duty_cycle: float = 1.0,
     max_weight_expansion: float = 4.0,
 ) -> PortfolioConfig:
-    from src.strategies.sma_pullback import SmaPullbackStrategy
+    strategy_class = load_strategy_by_id("sma_pullback")
     return PortfolioConfig(
         slots=[StrategySlot(
-            strategy_class=SmaPullbackStrategy,
+            strategy_class=strategy_class,
             symbols=["ES"] * n_symbols,
             weight=weight,
             expected_duty_cycle=duty_cycle,
@@ -202,12 +203,12 @@ class TestComputeTargets:
 
 class TestPortfolioConfigValidation:
     def test_weight_sum_tolerance_allows_small_rounding_error(self):
-        from src.strategies.sma_pullback import SmaPullbackStrategy
+        strategy_class = load_strategy_by_id("sma_pullback")
 
         config = PortfolioConfig(
             slots=[
-                StrategySlot(strategy_class=SmaPullbackStrategy, symbols=["ES"], weight=0.50),
-                StrategySlot(strategy_class=SmaPullbackStrategy, symbols=["NQ"], weight=0.495),
+                StrategySlot(strategy_class=strategy_class, symbols=["ES"], weight=0.50),
+                StrategySlot(strategy_class=strategy_class, symbols=["NQ"], weight=0.495),
             ],
             initial_capital=100_000.0,
             rebalance_frequency="intrabar",
@@ -216,12 +217,12 @@ class TestPortfolioConfigValidation:
         config.validate()
 
     def test_weights_must_sum_to_one(self):
-        from src.strategies.sma_pullback import SmaPullbackStrategy
+        strategy_class = load_strategy_by_id("sma_pullback")
 
         config = PortfolioConfig(
             slots=[
-                StrategySlot(strategy_class=SmaPullbackStrategy, symbols=["ES"], weight=0.60),
-                StrategySlot(strategy_class=SmaPullbackStrategy, symbols=["NQ"], weight=0.38),
+                StrategySlot(strategy_class=strategy_class, symbols=["ES"], weight=0.60),
+                StrategySlot(strategy_class=strategy_class, symbols=["NQ"], weight=0.38),
             ],
             initial_capital=100_000.0,
             rebalance_frequency="intrabar",
