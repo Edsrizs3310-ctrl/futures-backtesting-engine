@@ -322,7 +322,6 @@ class RollingFractalPivotStrategy(BaseStrategy):
         return {
             "rfp_lookback_bars": (5, 18, 1),
             "rfp_penetration_ticks": (1.0, 8.0, 1.0),
-            "rfp_atr_length": (10, 24, 2),
             "rfp_atr_mult_tp": (1.5, 4.0, 0.5),
             "rfp_atr_mult_sl": (1.0, 3.0, 0.25),
             "rfp_ibs_buy_threshold": (0.60, 0.85, 0.05),
