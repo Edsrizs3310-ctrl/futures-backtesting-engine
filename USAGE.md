@@ -50,7 +50,6 @@ python run.py --validate-data YM --tf 5m
 
 ```bash
 python run.py --backtest --strategy channel_breakout --symbol 6A --tf 30m --dashboard
-python run.py --backtest --strategy three_bar_mr --symbol ES --tf 30m --dashboard
 python run.py --backtest --strategy rfp_fractal --symbol NQ --tf 1h --dashboard
 ```
 
@@ -70,11 +69,8 @@ python run.py --portfolio-backtest --portfolio-config path/to/config.yaml
 ### Batch Runs
 
 ```bash
-python run.py batch --strategies bollinger_breakout --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
-python run.py batch --strategies kc_breakout --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
-python run.py batch --strategies wyckoff_aggressive --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
-python run.py batch --strategies wyckoff_moderate --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
-python run.py batch --strategies wyckoff_conservative --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
+python run.py batch --strategies diamond_breakout --symbol ES NQ YM RTY CL NG GC SI 6E 6B 6J 6A 6C 6S --tf 5m 30m 1h
+python run.py batch --strategies kc_breakout --symbol ES NQ YM --tf 1m 5m
 ```
 
 ### WFO Batch

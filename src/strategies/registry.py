@@ -58,11 +58,6 @@ STRATEGIES = {
         "name": "KeltnerTighteningBreakoutStrategy",
         "description": "Keltner Channel tightening breakout",
     },
-    "diamond_breakout": {
-        "class_path": "src.strategies.diamond_breakout:DiamondBreakoutStrategy",
-        "name": "DiamondBreakoutStrategy",
-        "description": "Diamond top / bottom breakout",
-    },
 }
 
 STRATEGY_ALIASES = {

@@ -32,23 +32,15 @@ results/
 # IDEs
 .idea/
 .vscode/
-#.cursor/
+.cursor/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Local data / artifacts
-#data/
-#src/data/
-# dev_context: only CLEAN_CODE_MCP.md is versioned (everything else stays local)
-#dev_context/*
-#!dev_context/CLEAN_CODE_MCP.md
+# Local data / artifacts (root data/ = IB cache, optimization dumps — not src/data/ Python package)
+/data/
 *.db
 *.sqlite
 *.sqlite3
 *.parquet
-
-# Private repo: track data lake / cache under data/ (override rules above)
-!data/**/*.parquet
-!data/**/*.db
