@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
+from src.backtest_engine.config import BacktestSettings
 from src.backtest_engine.execution import Order
 from src.backtest_engine.portfolio_layer.execution.strategy_runner import StrategyRunner
 from src.strategies.registry import get_strategy_ids, load_strategy_by_id
@@ -132,6 +133,19 @@ def test_strategy_contract(strategy_id: str) -> None:
     # 3. Search space contract
     space = strategy_class.get_search_space()
     assert isinstance(space, dict), f"Strategy {strategy_id} get_search_space() must return a dict"
+
+
+@pytest.mark.parametrize("strategy_id", get_strategy_ids())
+def test_strategy_search_space_respects_global_wfo_parameter_cap(strategy_id: str) -> None:
+    """Registered strategies must not exceed the global WFO dimensionality cap."""
+    strategy_class = load_strategy_by_id(strategy_id)
+    space = strategy_class.get_search_space()
+    max_params = BacktestSettings().wfo_max_parameters
+
+    assert len(space) <= max_params, (
+        f"Strategy {strategy_id} exposes {len(space)} WFO params, "
+        f"but the global cap is {max_params}."
+    )
 
 
 def test_three_bar_mr_emits_day_limit_entry_on_signal() -> None:
