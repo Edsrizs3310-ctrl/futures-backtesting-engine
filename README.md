@@ -1,5 +1,5 @@
 > [!WARNING]
-> **Upcoming Major Engine Refactor** — estimated mid-April (idk when exactly...)
+> **Upcoming Major Engine Refactor** — estimated end of April (idk when exactly...)
 >
 > The engine will be completely rewritten using **NautilusTrader**, transitioning to a simpler and more reliable backtesting workflow. Key changes include:
 > - **StatArb** and **Same single asset mode** support (portfolio and wfo will be too, don't worry)
