@@ -12,7 +12,7 @@
 > - significantly faster execution thanks to NautilusTrader's Rust-powered core
 >
 > The first public v2 milestone is planned for **around 30 Apr 2026**.  
-> If it slips, it should land **no later than 1-5 May 2026**.
+> If it slips, it should land **no later than 1-10 May 2026**.
 
 # Backtesting Platform
 
